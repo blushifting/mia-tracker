@@ -61,6 +61,11 @@ export const webviewHtml = `<!DOCTYPE html>
   .config-actions{display:flex;gap:8px;margin-top:4px;}
   #snack{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--surface);border:1px solid var(--border);padding:10px 18px;border-radius:20px;font-size:.8rem;color:var(--text);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;white-space:nowrap;z-index:999;}
   #snack.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  #debug-bar{display:none;padding:6px 12px;background:#1a1f29;border-bottom:1px solid var(--border);font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--muted);line-height:1.45;flex-shrink:0;}
+  #debug-bar.show{display:block;}
+  #debug-bar .dbg-row{display:flex;justify-content:space-between;gap:8px;}
+  #debug-bar .dbg-key{color:var(--accent);}
+  #debug-bar .dbg-hex{color:var(--beacon);word-break:break-all;font-size:.6rem;}
   .leaflet-tooltip{background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'Share Tech Mono',monospace;font-size:.7rem;}
   .marker-me{width:14px;height:14px;background:var(--accent);border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px var(--accent);}
   .marker-beacon{width:18px;height:18px;background:var(--beacon);border:2px solid #fff;border-radius:50%;box-shadow:0 0 12px var(--beacon);}
@@ -106,6 +111,11 @@ export const webviewHtml = `<!DOCTYPE html>
     <div id="status-dot"></div>
     <div id="status-text">D\xE9marrage…</div>
     <h1 id="header-title">\u{1F431} Mia</h1>
+  </div>
+  <div id="debug-bar">
+    <div class="dbg-row"><span><span class="dbg-key">devices</span> <span id="dbg-total">0</span></span><span><span class="dbg-key">apple</span> <span id="dbg-apple">0</span></span><span><span class="dbg-key">iBeacon</span> <span id="dbg-ib">0</span></span><span><span class="dbg-key">match</span> <span id="dbg-match">0</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">UUID re\xE7u</span>: <span id="dbg-uuid">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">hex Apple</span>: <span id="dbg-hex" class="dbg-hex">—</span></span></div>
   </div>
   <div id="map"></div>
   <div id="rssi-bar">
@@ -452,6 +462,15 @@ export const webviewHtml = `<!DOCTYPE html>
         case 'heading':    deviceHeading = msg.heading; break;
         case 'scanState':  scanning = msg.scanning; updateScanBtn();
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arr\xEAt\xE9', msg.scanning ? 'active' : '');
+                           document.getElementById('debug-bar').classList.toggle('show', !!msg.scanning);
+                           if (msg.scanning) { ['dbg-total','dbg-apple','dbg-ib','dbg-match'].forEach(function(id){document.getElementById(id).textContent='0';}); document.getElementById('dbg-uuid').textContent='—'; document.getElementById('dbg-hex').textContent='—'; }
+                           break;
+        case 'debug':      document.getElementById('dbg-total').textContent = msg.total;
+                           document.getElementById('dbg-apple').textContent = msg.apple;
+                           document.getElementById('dbg-ib').textContent = msg.iBeacon;
+                           document.getElementById('dbg-match').textContent = msg.matched;
+                           if (msg.lastIBeaconUuid) document.getElementById('dbg-uuid').textContent = msg.lastIBeaconUuid;
+                           if (msg.lastAppleHex) document.getElementById('dbg-hex').textContent = msg.lastAppleHex;
                            break;
         case 'status':     setStatus(msg.msg, msg.state || ''); break;
         case 'error':      setStatus(msg.msg, 'error'); snack(msg.msg); break;

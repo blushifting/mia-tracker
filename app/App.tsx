@@ -42,6 +42,12 @@ interface IBeaconAdv {
   txPowerByte: number;
 }
 
+function bytesToHex(b: Uint8Array): string {
+  const out: string[] = [];
+  for (let i = 0; i < b.length; i++) out.push(b[i].toString(16).padStart(2, '0'));
+  return out.join('');
+}
+
 function parseIBeacon(manufacturerDataB64: string | null): IBeaconAdv | null {
   if (!manufacturerDataB64) return null;
   let bytes: Uint8Array;
@@ -50,14 +56,41 @@ function parseIBeacon(manufacturerDataB64: string | null): IBeaconAdv | null {
   } catch {
     return null;
   }
-  if (bytes.length < 25) return null;
-  if (bytes[0] !== APPLE_COMPANY_ID[0] || bytes[1] !== APPLE_COMPANY_ID[1]) return null;
-  if (bytes[2] !== IBEACON_TYPE[0] || bytes[3] !== IBEACON_TYPE[1]) return null;
-  const uuid = bytesToUuid(bytes.slice(4, 20));
-  const major = (bytes[20] << 8) | bytes[21];
-  const minor = (bytes[22] << 8) | bytes[23];
-  const txPowerByte = bytes[24] > 127 ? bytes[24] - 256 : bytes[24];
+  // Variante 1 : bytes complets avec préfixe company ID Apple (4C 00) puis type iBeacon (02 15)
+  let offset = -1;
+  if (
+    bytes.length >= 25 &&
+    bytes[0] === APPLE_COMPANY_ID[0] &&
+    bytes[1] === APPLE_COMPANY_ID[1] &&
+    bytes[2] === IBEACON_TYPE[0] &&
+    bytes[3] === IBEACON_TYPE[1]
+  ) {
+    offset = 4;
+  } else if (
+    // Variante 2 : préfixe company ID strippé, payload commence directement par 02 15
+    bytes.length >= 23 &&
+    bytes[0] === IBEACON_TYPE[0] &&
+    bytes[1] === IBEACON_TYPE[1]
+  ) {
+    offset = 2;
+  }
+  if (offset < 0) return null;
+  const uuid = bytesToUuid(bytes.slice(offset, offset + 16));
+  const major = (bytes[offset + 16] << 8) | bytes[offset + 17];
+  const minor = (bytes[offset + 18] << 8) | bytes[offset + 19];
+  const txByte = bytes[offset + 20];
+  const txPowerByte = txByte > 127 ? txByte - 256 : txByte;
   return { uuid, major, minor, txPowerByte };
+}
+
+function isAppleManufacturer(manufacturerDataB64: string | null): boolean {
+  if (!manufacturerDataB64) return false;
+  try {
+    const b = base64ToBytes(manufacturerDataB64);
+    return b.length >= 2 && b[0] === APPLE_COMPANY_ID[0] && b[1] === APPLE_COMPANY_ID[1];
+  } catch {
+    return false;
+  }
 }
 
 async function requestAndroidPermissions(): Promise<boolean> {
@@ -79,7 +112,9 @@ export default function App() {
   const headingSubRef = useRef<Location.LocationSubscription | null>(null);
   const targetUuidRef = useRef<string>('FDA50693-A4E2-4FB1-AFCF-C6EB07647825');
   const scanningRef = useRef<boolean>(false);
-  const [webviewReady, setWebviewReady] = useState(false);
+  const statsRef = useRef({ total: 0, apple: 0, iBeacon: 0, matched: 0, lastAppleHex: '', lastIBeaconUuid: '' });
+  const statsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, setWebviewReady] = useState(false);
 
   useEffect(() => {
     bleManagerRef.current = new BleManager();
@@ -88,6 +123,7 @@ export default function App() {
       try { bleManagerRef.current?.destroy(); } catch {}
       locationSubRef.current?.remove();
       headingSubRef.current?.remove();
+      if (statsTimerRef.current) clearInterval(statsTimerRef.current);
     };
   }, []);
 
@@ -147,7 +183,14 @@ export default function App() {
     }
 
     scanningRef.current = true;
+    statsRef.current = { total: 0, apple: 0, iBeacon: 0, matched: 0, lastAppleHex: '', lastIBeaconUuid: '' };
     postToWebview({ type: 'scanState', scanning: true });
+
+    if (statsTimerRef.current) clearInterval(statsTimerRef.current);
+    statsTimerRef.current = setInterval(() => {
+      if (!scanningRef.current) return;
+      postToWebview({ type: 'debug', ...statsRef.current });
+    }, 1500);
 
     manager.startDeviceScan(
       null,
@@ -160,10 +203,22 @@ export default function App() {
           return;
         }
         if (!device) return;
-        const beacon = parseIBeacon(device.manufacturerData);
+        statsRef.current.total++;
+        const md = device.manufacturerData;
+        if (isAppleManufacturer(md)) {
+          statsRef.current.apple++;
+          try {
+            const b = base64ToBytes(md!);
+            statsRef.current.lastAppleHex = bytesToHex(b.slice(0, Math.min(b.length, 32)));
+          } catch {}
+        }
+        const beacon = parseIBeacon(md);
         if (!beacon) return;
+        statsRef.current.iBeacon++;
+        statsRef.current.lastIBeaconUuid = beacon.uuid;
         const target = targetUuidRef.current;
         if (target && beacon.uuid.toUpperCase() !== target.toUpperCase()) return;
+        statsRef.current.matched++;
         if (device.rssi === null || device.rssi === undefined) return;
         postToWebview({ type: 'rssi', rssi: device.rssi, name: device.localName || device.name || 'Mia' });
       }
@@ -174,6 +229,7 @@ export default function App() {
     try { bleManagerRef.current?.stopDeviceScan(); } catch {}
     locationSubRef.current?.remove(); locationSubRef.current = null;
     headingSubRef.current?.remove(); headingSubRef.current = null;
+    if (statsTimerRef.current) { clearInterval(statsTimerRef.current); statsTimerRef.current = null; }
     scanningRef.current = false;
     postToWebview({ type: 'scanState', scanning: false });
   }
