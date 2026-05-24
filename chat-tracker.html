@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0d1117">
+<title>Chat Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Oxanium:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --accent:   #39d353;
+    --warn:     #f0b429;
+    --danger:   #f85149;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --radius:   4px;
+    --beacon:   #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Oxanium', sans-serif; overflow: hidden; }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100dvh; }
+
+  /* ── Header ── */
+  #header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 10px;
+  }
+  #header h1 { font-size: 1rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  #status-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted); flex-shrink: 0;
+    box-shadow: 0 0 0 0 transparent;
+    transition: background .3s;
+  }
+  #status-dot.active { background: var(--accent); animation: pulse 1.4s infinite; }
+  #status-dot.warn   { background: var(--warn); }
+  #status-dot.error  { background: var(--danger); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(57,211,83,.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(57,211,83,0); }
+    100% { box-shadow: 0 0 0 0 rgba(57,211,83,0); }
+  }
+  #status-text { font-family: 'Share Tech Mono', monospace; font-size: .72rem; color: var(--muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Map ── */
+  #map { flex: 1; min-height: 0; }
+  .leaflet-container { background: #1c2128; }
+
+  /* ── RSSI bar ── */
+  #rssi-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #rssi-label { font-family: 'Share Tech Mono', monospace; font-size: .75rem; color: var(--muted); min-width: 80px; }
+  #rssi-track { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  #rssi-fill { height: 100%; width: 0%; border-radius: 3px; background: var(--accent); transition: width .4s, background .4s; }
+  #rssi-val { font-family: 'Share Tech Mono', monospace; font-size: .85rem; min-width: 56px; text-align: right; }
+
+  /* ── Direction compass ── */
+  #compass-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 8px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #compass-wrap { position: relative; width: 52px; height: 52px; flex-shrink: 0; }
+  #compass-ring {
+    width: 52px; height: 52px; border-radius: 50%;
+    border: 2px solid var(--border);
+    position: absolute;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .compass-tick {
+    position: absolute; width: 2px; height: 8px;
+    background: var(--border);
+    top: 2px; left: calc(50% - 1px);
+    transform-origin: 1px 24px;
+  }
+  #compass-arrow {
+    position: absolute;
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 22px solid var(--beacon);
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%) rotate(0deg);
+    transform-origin: 50% 100%;
+    filter: drop-shadow(0 0 4px var(--beacon));
+    transition: transform .6s ease;
+  }
+  #compass-center {
+    position: absolute; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text); top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+  }
+  #info-col { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+  .info-row { display: flex; justify-content: space-between; align-items: baseline; }
+  .info-lbl { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .info-val { font-family: 'Share Tech Mono', monospace; font-size: .95rem; }
+  #dist-val { color: var(--beacon); font-size: 1.1rem; font-weight: 600; }
+  #measures-count { font-size: .7rem; color: var(--muted); font-family: 'Share Tech Mono', monospace; }
+
+  /* ── Bottom controls ── */
+  #controls {
+    display: flex; gap: 8px; padding: 10px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .btn {
+    flex: 1; padding: 11px 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Oxanium', sans-serif;
+    font-size: .82rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { background: var(--border); }
+  .btn.primary { background: rgba(57,211,83,.12); border-color: var(--accent); color: var(--accent); }
+  .btn.primary:active { background: rgba(57,211,83,.25); }
+  .btn.danger { background: rgba(248,81,73,.1); border-color: var(--danger); color: var(--danger); }
+  .btn.warn { background: rgba(240,180,41,.1); border-color: var(--warn); color: var(--warn); }
+
+  /* ── Config panel ── */
+  #config-panel {
+    position: fixed; inset: 0;
+    background: rgba(13,17,23,.96);
+    z-index: 1000;
+    display: none;
+    flex-direction: column;
+    padding: 24px 20px;
+    gap: 18px;
+    overflow-y: auto;
+  }
+  #config-panel.open { display: flex; }
+  #config-panel h2 { font-size: 1rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--accent); }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .field input, .field select {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font-family: 'Share Tech Mono', monospace;
+    font-size: .88rem; padding: 10px 12px; border-radius: var(--radius);
+    outline: none; width: 100%;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .field .hint { font-size: .7rem; color: var(--muted); line-height: 1.4; }
+  .config-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+  /* ── Snackbar ── */
+  #snack {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 10px 18px; border-radius: 20px;
+    font-size: .8rem; color: var(--text);
+    opacity: 0; pointer-events: none;
+    transition: opacity .25s, transform .25s;
+    white-space: nowrap; z-index: 999;
+  }
+  #snack.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ── Leaflet custom markers ── */
+  .leaflet-tooltip { background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: 'Share Tech Mono', monospace; font-size: .7rem; }
+  .marker-me { width: 14px; height: 14px; background: var(--accent); border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 8px var(--accent); }
+  .marker-beacon { width: 18px; height: 18px; background: var(--beacon); border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 12px var(--beacon); }
+  .marker-meas { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--accent); }
+
+  /* ── No-BLE warning ── */
+  #no-ble {
+    position: fixed; inset: 0; z-index: 2000;
+    background: var(--bg);
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; padding: 32px; text-align: center;
+  }
+  #no-ble.show { display: flex; }
+  #no-ble .icon { font-size: 3rem; }
+  #no-ble h2 { font-size: 1.1rem; font-weight: 700; color: var(--danger); }
+  #no-ble p { font-size: .85rem; color: var(--muted); line-height: 1.6; max-width: 320px; }
+  #no-ble code { background: var(--surface); padding: 2px 6px; border-radius: 3px; font-family: 'Share Tech Mono', monospace; font-size: .82rem; }
+</style>
+</head>
+<body>
+
+<!-- No BLE overlay -->
+<div id="no-ble">
+  <div class="icon">📡</div>
+  <h2>Web Bluetooth non disponible</h2>
+  <p>Cette application nécessite <strong>Web Bluetooth API</strong>.<br>
+  Ouvre Chrome Android et active l'option expérimentale si nécessaire&nbsp;:<br>
+  <code>chrome://flags/#enable-web-bluetooth</code><br><br>
+  Sur desktop, nécessite Chrome + Bluetooth activé.</p>
+  <button class="btn primary" onclick="document.getElementById('no-ble').classList.remove('show')">Continuer quand même</button>
+</div>
+
+<!-- Config panel -->
+<div id="config-panel">
+  <h2>⚙ Configuration</h2>
+
+  <div class="field">
+    <label>UUID du beacon iBeacon</label>
+    <input id="cfg-uuid" type="text" placeholder="ex: 12345678-1234-1234-1234-123456789abc">
+    <div class="hint">UUID complet 128 bits de ton RDL810-B2. Laisse vide pour accepter tous les beacons.</div>
+  </div>
+
+  <div class="field">
+    <label>Puissance Tx à 1 m (dBm)</label>
+    <input id="cfg-txpower" type="number" value="-65" min="-100" max="0">
+    <div class="hint">Valeur gravée dans le beacon (souvent -65 à -70 dBm). Ajuste selon tes mesures terrain.</div>
+  </div>
+
+  <div class="field">
+    <label>Exposant de propagation (n)</label>
+    <input id="cfg-n" type="number" value="2.5" step="0.1" min="1.5" max="4">
+    <div class="hint">2.0 = espace libre, 2.5 = jardin (recommandé), 3–4 = intérieur dense.</div>
+  </div>
+
+  <div class="field">
+    <label>Lissage RSSI (fenêtre glissante)</label>
+    <input id="cfg-smooth" type="number" value="5" min="1" max="20">
+    <div class="hint">Nombre de mesures à moyenner. Plus élevé = plus stable, moins réactif.</div>
+  </div>
+
+  <div class="field">
+    <label>Nom affiché du beacon</label>
+    <input id="cfg-name" type="text" placeholder="ex: Noisette" value="">
+  </div>
+
+  <div class="config-actions">
+    <button class="btn primary" onclick="saveConfig()">✓ Enregistrer</button>
+    <button class="btn" onclick="closeConfig()">Annuler</button>
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <div id="header">
+    <div id="status-dot"></div>
+    <div id="status-text">Prêt · configurez le beacon</div>
+    <h1 id="header-title">🐱 Tracker</h1>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- RSSI bar -->
+  <div id="rssi-bar">
+    <div id="rssi-label">RSSI</div>
+    <div id="rssi-track"><div id="rssi-fill"></div></div>
+    <div id="rssi-val" style="color:var(--muted)">— dBm</div>
+  </div>
+
+  <!-- Compass + info -->
+  <div id="compass-row">
+    <div id="compass-wrap">
+      <div id="compass-ring"></div>
+      <div id="compass-arrow"></div>
+      <div id="compass-center"></div>
+    </div>
+    <div id="info-col">
+      <div class="info-row">
+        <span class="info-lbl">Distance estimée</span>
+        <span class="info-val" id="dist-val">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-lbl">Confiance</span>
+        <span class="info-val" id="conf-val" style="color:var(--muted)">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-lbl">Mesures</span>
+        <span id="measures-count">0 points · position fixe</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <button class="btn primary" id="btn-scan" onclick="toggleScan()">▶ Scanner</button>
+    <button class="btn warn" id="btn-center" onclick="centerMap()">⊙ Centrer</button>
+    <button class="btn danger" id="btn-clear" onclick="clearMeasures()">✕ Effacer</button>
+    <button class="btn" onclick="openConfig()">⚙</button>
+  </div>
+</div>
+
+<div id="snack"></div>
+
+<script>
+window.onload = function() {
+// ─────────────────────────────────────────────
+// Config
+// ─────────────────────────────────────────────
+let cfg = {
+  uuid:     'fda50693-a4e2-4fb1-afcf-c6eb07647825',
+  txPower:  -40,
+  n:        2.5,
+  smooth:   5,
+  name:     'Mia'
+};
+loadConfig();
+
+function loadConfig() {
+  try {
+    const saved = localStorage.getItem('chattracker_cfg');
+    if (saved) cfg = { ...cfg, ...JSON.parse(saved) };
+  } catch(e) {}
+  applyCfgToForm();
+}
+function applyCfgToForm() {
+  document.getElementById('cfg-uuid').value    = cfg.uuid;
+  document.getElementById('cfg-txpower').value = cfg.txPower;
+  document.getElementById('cfg-n').value       = cfg.n;
+  document.getElementById('cfg-smooth').value  = cfg.smooth;
+  document.getElementById('cfg-name').value    = cfg.name;
+  document.getElementById('header-title').textContent = '🐱 ' + (cfg.name || 'Chat');
+}
+function saveConfig() {
+  cfg.uuid     = document.getElementById('cfg-uuid').value.trim().toLowerCase();
+  cfg.txPower  = parseFloat(document.getElementById('cfg-txpower').value) || -65;
+  cfg.n        = parseFloat(document.getElementById('cfg-n').value) || 2.5;
+  cfg.smooth   = parseInt(document.getElementById('cfg-smooth').value) || 5;
+  cfg.name     = document.getElementById('cfg-name').value.trim() || 'Chat';
+  localStorage.setItem('chattracker_cfg', JSON.stringify(cfg));
+  document.getElementById('header-title').textContent = '🐱 ' + cfg.name;
+  closeConfig();
+  snack('Configuration enregistrée ✓');
+}
+function openConfig()  { document.getElementById('config-panel').classList.add('open'); }
+function closeConfig() { document.getElementById('config-panel').classList.remove('open'); }
+window.toggleScan   = toggleScan;
+window.centerMap    = centerMap;
+window.clearMeasures= clearMeasures;
+window.openConfig   = openConfig;
+window.closeConfig  = closeConfig;
+window.saveConfig   = saveConfig;
+
+// ─────────────────────────────────────────────
+// Map
+// ─────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true, attributionControl: false });
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  maxZoom: 22, subdomains: 'abcd'
+}).addTo(map);
+L.control.attribution({ prefix: false, position: 'bottomleft' })
+  .addAttribution('© OpenStreetMap · CartoDB').addTo(map);
+map.setView([48.85, 2.35], 18);
+
+let markerMe = null;
+let markerBeacon = null;
+let measureLayer = L.layerGroup().addTo(map);
+let lineLayer = L.layerGroup().addTo(map);
+
+function makeIcon(cls) {
+  return L.divIcon({ className: '', html: `<div class="${cls}"></div>`, iconSize: [14,14], iconAnchor: [7,7] });
+}
+
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+let scanning = false;
+let bleDevice = null;
+let gpsWatchId = null;
+let myPos = null;
+let measures = [];       // { lat, lng, rssi, dist, t }
+let rssiWindow = [];     // rolling window
+let beaconPos = null;
+let lastBearing = null;
+
+// ─────────────────────────────────────────────
+// BLE check
+// ─────────────────────────────────────────────
+if (!navigator.bluetooth) {
+  document.getElementById('no-ble').classList.add('show');
+}
+
+// ─────────────────────────────────────────────
+// GPS
+// ─────────────────────────────────────────────
+function startGPS() {
+  if (!navigator.geolocation) { snack('GPS non disponible'); return; }
+  gpsWatchId = navigator.geolocation.watchPosition(
+    pos => {
+      myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+      if (!markerMe) {
+        markerMe = L.marker([myPos.lat, myPos.lng], { icon: makeIcon('marker-me') })
+          .bindTooltip('Vous', { permanent: false }).addTo(map);
+        map.setView([myPos.lat, myPos.lng], 19);
+      } else {
+        markerMe.setLatLng([myPos.lat, myPos.lng]);
+      }
+    },
+    err => setStatus('GPS: ' + err.message, 'warn'),
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+  );
+}
+function stopGPS() {
+  if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
+}
+
+// ─────────────────────────────────────────────
+// BLE Scan
+// ─────────────────────────────────────────────
+async function toggleScan() {
+  if (scanning) { stopScan(); return; }
+  try {
+    await startScan();
+  } catch(e) {
+    setStatus('Erreur BLE: ' + e.message, 'error');
+    snack('⚠ ' + e.message);
+  }
+}
+
+async function startScan() {
+  setStatus('Connexion BLE…', 'warn');
+
+  // Filtre de scan : on filtre par services iBeacon
+  // Le beacon iBeacon annonce en advertising, pas en GATT → on utilise le scan via requestLEScan (Chrome expérimental)
+  // Fallback : requestDevice avec acceptAllDevices pour la démo
+  const opts = { acceptAllDevices: true };
+  if (cfg.uuid) {
+    // Pas possible de filtrer par iBeacon UUID via Web Bluetooth standard (pas de raw advertising access stable)
+    // On accepte tous et on filtre côté JS
+  }
+
+  // Essayer d'abord le Bluetooth Scanning API (plus approprié pour beacon passif)
+  if (navigator.bluetooth.requestLEScan) {
+    await startLEScan();
+  } else {
+    // Fallback via requestDevice (nécessite un clic utilisateur déjà présent)
+    await startGATTScan();
+  }
+}
+
+// ── Méthode 1 : requestLEScan (Chrome expérimental, Android)
+async function startLEScan() {
+  const scanOpts = { acceptAllAdvertisements: true, keepRepeatedDevices: true };
+  let scan;
+  try {
+    scan = await navigator.bluetooth.requestLEScan(scanOpts);
+  } catch(e) {
+    snack('LEScan refusé, bascule sur GATT…');
+    await startGATTScan();
+    return;
+  }
+
+  scanning = true;
+  startGPS();
+  setStatus('Scan BLE actif · en attente de signaux…', 'active');
+  updateScanBtn();
+
+  navigator.bluetooth.addEventListener('advertisementreceived', onAdvertisement);
+
+  // Arrêt propre quand scan se ferme
+  scan.addEventListener('error', () => { if (scanning) stopScan(); });
+}
+
+function onAdvertisement(event) {
+  // Filtrer par UUID si configuré
+  if (cfg.uuid) {
+    let found = false;
+    for (const [uuid] of event.serviceData) {
+      if (uuid.toLowerCase().includes(cfg.uuid.replace(/-/g,''))) { found = true; break; }
+    }
+    // iBeacon met aussi son UUID dans manufacturerData (format Apple 0x004C)
+    for (const [companyId, data] of event.manufacturerData) {
+      if (companyId === 0x004C) { // Apple
+        const bytes = new Uint8Array(data.buffer);
+        if (bytes[0] === 0x02 && bytes[1] === 0x15) { // iBeacon
+          const uuidBytes = Array.from(bytes.slice(2,18)).map(b => b.toString(16).padStart(2,'0'));
+          const parsedUUID = [
+            uuidBytes.slice(0,4).join(''),
+            uuidBytes.slice(4,6).join(''),
+            uuidBytes.slice(6,8).join(''),
+            uuidBytes.slice(8,10).join(''),
+            uuidBytes.slice(10,16).join('')
+          ].join('-');
+          if (parsedUUID === cfg.uuid) found = true;
+        }
+      }
+    }
+    if (!found) return;
+  }
+
+  const rssi = event.rssi;
+  if (rssi === null || rssi === undefined || rssi === 127) return;
+  processRSSI(rssi, event.device.name || cfg.name);
+}
+
+// ── Méthode 2 : GATT (fallback) — demande connexion explicite
+async function startGATTScan() {
+  snack('Mode GATT — sélectionne le beacon dans la liste');
+  const device = await navigator.bluetooth.requestDevice({
+    acceptAllDevices: true,
+    optionalServices: ['battery_service', 'generic_access']
+  });
+  bleDevice = device;
+  scanning = true;
+  startGPS();
+  setStatus('Connecté à: ' + (device.name || 'inconnu') + ' · relevés en cours', 'active');
+  updateScanBtn();
+
+  // En GATT on n'a pas accès au RSSI en continu via l'API standard
+  // On simule via watchAdvertisements si disponible
+  if (device.watchAdvertisements) {
+    await device.watchAdvertisements();
+    device.addEventListener('advertisementreceived', e => processRSSI(e.rssi, device.name));
+  } else {
+    snack('watchAdvertisements non dispo — RSSI limité');
+    // Polling RSSI via readRSSI si supporté (non standard)
+    bleDevice._pollInterval = setInterval(async () => {
+      try {
+        const server = await device.gatt.connect();
+        // RSSI non accessible en GATT standard
+        setStatus('Connecté (RSSI non accessible en GATT)', 'warn');
+      } catch(e) {}
+    }, 3000);
+  }
+}
+
+function stopScan() {
+  scanning = false;
+  if (bleDevice) {
+    try { bleDevice.gatt.disconnect(); } catch(e) {}
+    if (bleDevice._pollInterval) clearInterval(bleDevice._pollInterval);
+    try { bleDevice.unwatchAdvertisements(); } catch(e) {}
+    bleDevice = null;
+  }
+  try { navigator.bluetooth.removeEventListener('advertisementreceived', onAdvertisement); } catch(e) {}
+  stopGPS();
+  setStatus('Scan arrêté · ' + measures.length + ' mesures enregistrées', '');
+  updateScanBtn();
+}
+
+// ─────────────────────────────────────────────
+// RSSI → Distance → Localisation
+// ─────────────────────────────────────────────
+function processRSSI(rssi, name) {
+  // Lissage
+  rssiWindow.push(rssi);
+  if (rssiWindow.length > cfg.smooth) rssiWindow.shift();
+  const smoothed = rssiWindow.reduce((a,b) => a+b, 0) / rssiWindow.length;
+
+  // Affichage barre
+  updateRSSIBar(smoothed);
+  setStatus('Beacon: ' + (name || cfg.name) + ' · RSSI ' + smoothed.toFixed(1) + ' dBm', 'active');
+
+  // Distance via modèle log-distance
+  const dist = rssiToDistance(smoothed);
+  document.getElementById('dist-val').textContent = dist < 1000 ? dist.toFixed(1) + ' m' : '>100 m';
+
+  // Enregistrer mesure si GPS dispo
+  if (myPos) {
+    measures.push({ lat: myPos.lat, lng: myPos.lng, rssi: smoothed, dist, t: Date.now() });
+    addMeasureMarker(myPos.lat, myPos.lng, smoothed, dist);
+    estimateBeaconPosition();
+    document.getElementById('measures-count').textContent = measures.length + ' mesures';
+  }
+}
+
+function rssiToDistance(rssi) {
+  return Math.pow(10, (cfg.txPower - rssi) / (10 * cfg.n));
+}
+
+function updateRSSIBar(rssi) {
+  // -100 dBm → 0%, -40 dBm → 100%
+  const pct = Math.max(0, Math.min(100, (rssi + 100) / 60 * 100));
+  const fill = document.getElementById('rssi-fill');
+  fill.style.width = pct + '%';
+  fill.style.background = pct > 66 ? 'var(--accent)' : pct > 33 ? 'var(--warn)' : 'var(--danger)';
+  const val = document.getElementById('rssi-val');
+  val.textContent = rssi.toFixed(1) + ' dBm';
+  val.style.color = pct > 66 ? 'var(--accent)' : pct > 33 ? 'var(--warn)' : 'var(--danger)';
+  document.getElementById('rssi-label').textContent = 'RSSI · ' + (pct > 66 ? '🟢' : pct > 33 ? '🟡' : '🔴');
+}
+
+// ─────────────────────────────────────────────
+// Triangulation par moindres carrés pondérés
+// Algo : weighted centroid sur les N meilleures mesures
+// (vraie trilatération non linéaire pour >3 pts distincts)
+// ─────────────────────────────────────────────
+function estimateBeaconPosition() {
+  if (measures.length < 2) return;
+
+  // Filtrer les mesures récentes (30 dernières secondes)
+  const now = Date.now();
+  const recent = measures.filter(m => now - m.t < 30000);
+  if (recent.length < 2) return;
+
+  // Dédupliquer les positions proches (< 0.5 m) → garder le meilleur RSSI
+  const unique = deduplicatePositions(recent, 0.5);
+
+  if (unique.length === 1) {
+    // 1 seul point : on dessine juste un cercle de rayon dist
+    const m = unique[0];
+    placeBeaconMarker(m.lat, m.lng, m.dist, 1, 'single');
+    return;
+  }
+
+  // ≥ 2 points distincts : weighted centroid
+  // Poids = 1/dist² (plus le signal est fort = dist faible → poids élevé)
+  let wLat = 0, wLng = 0, wSum = 0;
+  for (const m of unique) {
+    const w = 1 / (m.dist * m.dist + 0.01);
+    wLat += m.lat * w;
+    wLng += m.lng * w;
+    wSum += w;
+  }
+  const lat = wLat / wSum;
+  const lng = wLng / wSum;
+
+  // Si ≥ 3 positions uniques, tenter trilatération NLS
+  let finalPos = { lat, lng };
+  if (unique.length >= 3) {
+    const nls = trilaterate(unique);
+    if (nls) finalPos = nls;
+  }
+
+  const conf = Math.min(100, unique.length * 12 + (unique.length >= 3 ? 20 : 0));
+  placeBeaconMarker(finalPos.lat, finalPos.lng, null, conf, unique.length >= 3 ? 'trilat' : 'centroid');
+
+  // Bearing depuis position actuelle
+  if (myPos) {
+    const bearing = getBearing(myPos.lat, myPos.lng, finalPos.lat, finalPos.lng);
+    setCompassBearing(bearing);
+    const d = getDistance(myPos.lat, myPos.lng, finalPos.lat, finalPos.lng);
+    document.getElementById('dist-val').textContent = d < 1000 ? d.toFixed(1) + ' m' : (d/1000).toFixed(2) + ' km';
+    const confLabel = conf > 70 ? '🟢 élevée' : conf > 40 ? '🟡 moyenne' : '🔴 faible';
+    document.getElementById('conf-val').textContent = confLabel;
+  }
+}
+
+function deduplicatePositions(pts, minDist) {
+  const out = [];
+  for (const p of pts) {
+    let merged = false;
+    for (const o of out) {
+      if (getDistance(p.lat, p.lng, o.lat, o.lng) < minDist) {
+        // Garder le meilleur RSSI
+        if (p.rssi > o.rssi) { o.lat = p.lat; o.lng = p.lng; o.rssi = p.rssi; o.dist = p.dist; }
+        merged = true; break;
+      }
+    }
+    if (!merged) out.push({ ...p });
+  }
+  return out;
+}
+
+// Trilatération par descente de gradient (Gauss-Newton simplifié)
+function trilaterate(pts) {
+  // Point de départ : centroid pondéré
+  let lat = pts.reduce((s,p) => s + p.lat, 0) / pts.length;
+  let lng = pts.reduce((s,p) => s + p.lng, 0) / pts.length;
+  const R = 6371000;
+
+  for (let iter = 0; iter < 50; iter++) {
+    let gLat = 0, gLng = 0, step = 0;
+    for (const p of pts) {
+      const d = getDistance(lat, lng, p.lat, p.lng);
+      const err = d - p.dist;
+      if (d < 0.001) continue;
+      const dLat = (lat - p.lat) * R * Math.PI / 180;
+      const dLng = (lng - p.lng) * R * Math.cos(lat * Math.PI/180) * Math.PI / 180;
+      gLat += err * dLat / d;
+      gLng += err * dLng / d;
+      step += Math.abs(err);
+    }
+    const lr = 0.0001 / pts.length;
+    lat -= gLat * lr;
+    lng -= gLng * lr;
+    if (step / pts.length < 0.05) break;
+  }
+  // Vérifier que le résultat est raisonnable (< 500 m du centroid)
+  const check = pts.reduce((s,p) => s + getDistance(lat,lng,p.lat,p.lng), 0) / pts.length;
+  if (check > 500) return null;
+  return { lat, lng };
+}
+
+function placeBeaconMarker(lat, lng, radius, conf, method) {
+  beaconPos = { lat, lng };
+  lineLayer.clearLayers();
+
+  if (!markerBeacon) {
+    markerBeacon = L.marker([lat, lng], { icon: makeIcon('marker-beacon') })
+      .bindTooltip(cfg.name, { permanent: true, direction: 'top', offset: [0,-8] })
+      .addTo(map);
+  } else {
+    markerBeacon.setLatLng([lat, lng]);
+  }
+
+  // Cercle d'incertitude
+  if (radius && radius < 200) {
+    L.circle([lat, lng], {
+      radius, color: 'var(--beacon)', fill: true,
+      fillColor: 'var(--beacon)', fillOpacity: 0.08,
+      weight: 1, dashArray: '4,4'
+    }).addTo(lineLayer);
+  }
+
+  // Ligne me→beacon
+  if (myPos) {
+    L.polyline([[myPos.lat, myPos.lng],[lat,lng]], {
+      color: 'var(--beacon)', weight: 1.5, opacity: 0.5, dashArray: '6,4'
+    }).addTo(lineLayer);
+  }
+
+  document.getElementById('measures-count').textContent =
+    measures.length + ' mesures · ' + method;
+}
+
+function addMeasureMarker(lat, lng, rssi, dist) {
+  const pct = Math.max(0, Math.min(100, (rssi + 100) / 60 * 100));
+  const color = pct > 66 ? '#39d353' : pct > 33 ? '#f0b429' : '#f85149';
+  const icon = L.divIcon({
+    className: '',
+    html: `<div class="marker-meas" style="background:${color};border-color:${color};opacity:.7"></div>`,
+    iconSize: [8,8], iconAnchor: [4,4]
+  });
+  L.marker([lat, lng], { icon })
+    .bindTooltip(dist.toFixed(1) + ' m · ' + rssi.toFixed(0) + ' dBm', { sticky: true })
+    .addTo(measureLayer);
+}
+
+// ─────────────────────────────────────────────
+// Géométrie
+// ─────────────────────────────────────────────
+function getDistance(lat1,lng1,lat2,lng2) {
+  const R = 6371000;
+  const dLat = (lat2-lat1)*Math.PI/180;
+  const dLng = (lng2-lng1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+function getBearing(lat1,lng1,lat2,lng2) {
+  const dLng = (lng2-lng1)*Math.PI/180;
+  const y = Math.sin(dLng)*Math.cos(lat2*Math.PI/180);
+  const x = Math.cos(lat1*Math.PI/180)*Math.sin(lat2*Math.PI/180) - Math.sin(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.cos(dLng);
+  return (Math.atan2(y,x)*180/Math.PI + 360) % 360;
+}
+
+// ─────────────────────────────────────────────
+// Boussole
+// ─────────────────────────────────────────────
+let deviceHeading = 0;
+if (window.DeviceOrientationEvent) {
+  const req = DeviceOrientationEvent.requestPermission;
+  if (typeof req === 'function') {
+    // iOS 13+ : demander permission au clic
+    document.getElementById('btn-scan').addEventListener('click', () => {
+      req().then(s => { if (s === 'granted') listenOrientation(); }).catch(()=>{});
+    }, { once: true });
+  } else {
+    listenOrientation();
+  }
+}
+function listenOrientation() {
+  window.addEventListener('deviceorientationabsolute', e => {
+    if (e.alpha !== null) deviceHeading = e.alpha;
+  });
+  window.addEventListener('deviceorientation', e => {
+    if (e.webkitCompassHeading !== undefined) deviceHeading = e.webkitCompassHeading;
+    else if (e.alpha !== null) deviceHeading = 360 - e.alpha;
+  });
+}
+
+function setCompassBearing(bearing) {
+  lastBearing = bearing;
+  // Angle flèche = direction vers beacon - orientation device
+  const angle = (bearing - deviceHeading + 360) % 360;
+  document.getElementById('compass-arrow').style.transform =
+    `translate(-50%, -50%) rotate(${angle}deg)`;
+}
+
+// Rafraîchir la boussole même sans nouveau RSSI
+setInterval(() => {
+  if (lastBearing !== null) setCompassBearing(lastBearing);
+}, 500);
+
+// ─────────────────────────────────────────────
+// UI helpers
+// ─────────────────────────────────────────────
+function setStatus(msg, state) {
+  document.getElementById('status-text').textContent = msg;
+  const dot = document.getElementById('status-dot');
+  dot.className = 'active error warn'.includes(state) ? state : (state === 'active' ? 'active' : '');
+}
+
+function updateScanBtn() {
+  const btn = document.getElementById('btn-scan');
+  if (scanning) { btn.textContent = '■ Arrêter'; btn.className = 'btn danger'; }
+  else           { btn.textContent = '▶ Scanner'; btn.className = 'btn primary'; }
+}
+
+function centerMap() {
+  if (myPos) map.setView([myPos.lat, myPos.lng], 19);
+  else if (beaconPos) map.setView([beaconPos.lat, beaconPos.lng], 19);
+}
+
+function clearMeasures() {
+  measures = [];
+  rssiWindow = [];
+  beaconPos = null;
+  lastBearing = null;
+  measureLayer.clearLayers();
+  lineLayer.clearLayers();
+  if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
+  document.getElementById('measures-count').textContent = '0 mesures · position fixe';
+  document.getElementById('dist-val').textContent = '—';
+  document.getElementById('conf-val').textContent = '—';
+  document.getElementById('rssi-val').textContent = '— dBm';
+  document.getElementById('rssi-fill').style.width = '0%';
+  document.getElementById('compass-arrow').style.transform = 'translate(-50%,-50%) rotate(0deg)';
+  snack('Mesures effacées');
+}
+
+let snackTimer;
+function snack(msg) {
+  const el = document.getElementById('snack');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(snackTimer);
+  snackTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// Ticks boussole
+(function drawTicks() {
+  const ring = document.getElementById('compass-ring');
+  for (let i = 0; i < 12; i++) {
+    const t = document.createElement('div');
+    t.className = 'compass-tick';
+    t.style.transform = `rotate(${i*30}deg)`;
+    ring.appendChild(t);
+  }
+})();
+
+// ─────────────────────────────────────────────
+// PWA Service Worker (inline via blob)
+// ─────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  const swCode = `
+    const CACHE='chattracker-v1';
+    self.addEventListener('install', e => {
+      e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/'])));
+      self.skipWaiting();
+    });
+    self.addEventListener('fetch', e => {
+      e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+    });
+  `;
+  const blob = new Blob([swCode], { type: 'application/javascript' });
+  const swUrl = URL.createObjectURL(blob);
+  navigator.serviceWorker.register(swUrl).catch(() => {});
+}
+
+}; // fin window.onload
+</script>
+</body>
+</html>
