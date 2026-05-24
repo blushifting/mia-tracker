@@ -95,6 +95,49 @@ function isAppleManufacturer(manufacturerDataB64: string | null): boolean {
   }
 }
 
+/**
+ * Parse le rawScanRecord (bytes bruts du packet d'advertising BLE) et
+ * extrait la 1re manufacturer-specific data (AD type 0xFF) qui ressemble
+ * à un iBeacon. Le format AD record BLE est :
+ *   [length] [AD type] [data_length-1 bytes]
+ * répété jusqu'à la fin du packet (length=0 = fin).
+ * On contourne BLE-PLX qui semble filtrer les iBeacons côté
+ * device.manufacturerData sur Pixel/Android 14+.
+ */
+function parseIBeaconFromRaw(rawScanRecordB64: string | null): IBeaconAdv | null {
+  if (!rawScanRecordB64) return null;
+  let b: Uint8Array;
+  try { b = base64ToBytes(rawScanRecordB64); } catch { return null; }
+  let i = 0;
+  while (i < b.length) {
+    const len = b[i];
+    if (len === 0) break;
+    if (i + len >= b.length) break;
+    const adType = b[i + 1];
+    if (adType === 0xFF && len >= 26) {
+      // Manufacturer specific data : [company_id_lo, company_id_hi, payload...]
+      // Pour iBeacon : 4C 00 02 15 [UUID 16] [Maj 2] [Min 2] [Tx 1] = 25 bytes après le type
+      const m0 = b[i + 2];
+      const m1 = b[i + 3];
+      const m2 = b[i + 4];
+      // m3 (len byte 0x15) parfois non standard, on l'ignore
+      if (m0 === 0x4C && m1 === 0x00 && m2 === 0x02) {
+        const off = i + 6; // i+2(company) +2 +2(type+length) = i+6
+        if (b.length >= off + 21) {
+          const uuid = bytesToUuid(b.slice(off, off + 16));
+          const major = (b[off + 16] << 8) | b[off + 17];
+          const minor = (b[off + 18] << 8) | b[off + 19];
+          const txByte = b[off + 20];
+          const txPowerByte = txByte > 127 ? txByte - 256 : txByte;
+          return { uuid, major, minor, txPowerByte };
+        }
+      }
+    }
+    i += len + 1;
+  }
+  return null;
+}
+
 async function requestAndroidPermissions(): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
   const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
@@ -123,6 +166,9 @@ export default function App() {
     appleSubtypes: '',
     sub02Seen: 0,
     sub02Hex: '',
+    hasRaw: 0,
+    firstRawHex: '',
+    rawIBeacon: 0,
     beaconSeen: 0,
     beaconName: '',
     beaconRssi: 0,
@@ -205,6 +251,7 @@ export default function App() {
     statsRef.current = {
       total: 0, apple: 0, iBeacon: 0, matched: 0, appleSubtypes: '',
       sub02Seen: 0, sub02Hex: '',
+      hasRaw: 0, firstRawHex: '', rawIBeacon: 0,
       beaconSeen: 0, beaconName: '', beaconRssi: 0, beaconMdLen: 0,
       beaconMd: '', beaconRaw: '', beaconServiceData: '',
     };
@@ -285,7 +332,20 @@ export default function App() {
           }
         }
 
-        const beacon = parseIBeacon(md);
+        // Tentative principale : parser le rawScanRecord (bytes bruts du
+        // packet d'advertising) — contourne le filtrage iBeacon de BLE-PLX.
+        const raw = (device as any).rawScanRecord as string | null;
+        let beacon: IBeaconAdv | null = null;
+        if (raw) {
+          statsRef.current.hasRaw++;
+          if (!statsRef.current.firstRawHex) {
+            try { statsRef.current.firstRawHex = bytesToHex(base64ToBytes(raw)).slice(0, 80); } catch {}
+          }
+          beacon = parseIBeaconFromRaw(raw);
+          if (beacon) statsRef.current.rawIBeacon++;
+        }
+        // Fallback : parser via manufacturerData (souvent vide pour iBeacons)
+        if (!beacon) beacon = parseIBeacon(md);
         if (!beacon) return;
         statsRef.current.iBeacon++;
         const target = targetUuidRef.current;
