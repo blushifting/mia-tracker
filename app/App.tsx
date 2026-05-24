@@ -111,8 +111,23 @@ export default function App() {
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const headingSubRef = useRef<Location.LocationSubscription | null>(null);
   const targetUuidRef = useRef<string>('FDA50693-A4E2-4FB1-AFCF-C6EB07647825');
+  const targetMacRef = useRef<string>('51:00:25:09:00:4E');
   const scanningRef = useRef<boolean>(false);
-  const statsRef = useRef({ total: 0, apple: 0, iBeacon: 0, matched: 0, lastAppleHex: '', lastIBeaconUuid: '' });
+  const statsRef = useRef({
+    total: 0,
+    apple: 0,
+    iBeacon: 0,
+    matched: 0,
+    appleSubtypes: '',
+    beaconSeen: 0,
+    beaconName: '',
+    beaconRssi: 0,
+    beaconMdLen: 0,
+    beaconMd: '',
+    beaconRaw: '',
+    beaconServiceData: '',
+  });
+  const appleSubtypeCountsRef = useRef<Record<string, number>>({});
   const statsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [, setWebviewReady] = useState(false);
 
@@ -138,13 +153,14 @@ export default function App() {
     if (scanningRef.current) return;
     targetUuidRef.current = (uuid || '').toUpperCase();
 
+    postToWebview({ type: 'status', msg: 'Demande permissions Bluetooth…', state: 'warn' });
     const ok = await requestAndroidPermissions();
     if (!ok) {
       postToWebview({ type: 'error', msg: 'Permissions Bluetooth/Localisation refusées' });
       return;
     }
 
-    // Location
+    postToWebview({ type: 'status', msg: 'Demande permission GPS…', state: 'warn' });
     const loc = await Location.requestForegroundPermissionsAsync();
     if (loc.status !== 'granted') {
       postToWebview({ type: 'error', msg: 'Permission GPS refusée' });
@@ -183,14 +199,24 @@ export default function App() {
     }
 
     scanningRef.current = true;
-    statsRef.current = { total: 0, apple: 0, iBeacon: 0, matched: 0, lastAppleHex: '', lastIBeaconUuid: '' };
+    statsRef.current = {
+      total: 0, apple: 0, iBeacon: 0, matched: 0, appleSubtypes: '',
+      beaconSeen: 0, beaconName: '', beaconRssi: 0, beaconMdLen: 0,
+      beaconMd: '', beaconRaw: '', beaconServiceData: '',
+    };
+    appleSubtypeCountsRef.current = {};
     postToWebview({ type: 'scanState', scanning: true });
 
     if (statsTimerRef.current) clearInterval(statsTimerRef.current);
     statsTimerRef.current = setInterval(() => {
       if (!scanningRef.current) return;
+      const counts = appleSubtypeCountsRef.current;
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      statsRef.current.appleSubtypes = sorted.map(([k, v]) => `${k}:${v}`).join(' ');
       postToWebview({ type: 'debug', ...statsRef.current });
     }, 1500);
+
+    const targetMac = targetMacRef.current.toUpperCase();
 
     manager.startDeviceScan(
       null,
@@ -204,18 +230,53 @@ export default function App() {
         }
         if (!device) return;
         statsRef.current.total++;
+
         const md = device.manufacturerData;
         if (isAppleManufacturer(md)) {
           statsRef.current.apple++;
           try {
             const b = base64ToBytes(md!);
-            statsRef.current.lastAppleHex = bytesToHex(b.slice(0, Math.min(b.length, 32)));
+            if (b.length >= 3) {
+              const subtype = '0x' + b[2].toString(16).padStart(2, '0');
+              appleSubtypeCountsRef.current[subtype] = (appleSubtypeCountsRef.current[subtype] || 0) + 1;
+            }
           } catch {}
         }
+
+        // Beacon ciblé par adresse MAC : dump tout ce qu'on a sur ce device spécifique
+        if (device.id && device.id.toUpperCase() === targetMac) {
+          statsRef.current.beaconSeen++;
+          statsRef.current.beaconName = device.localName || device.name || '';
+          if (device.rssi !== null && device.rssi !== undefined) statsRef.current.beaconRssi = device.rssi;
+          try {
+            if (md) {
+              const b = base64ToBytes(md);
+              statsRef.current.beaconMdLen = b.length;
+              statsRef.current.beaconMd = bytesToHex(b);
+            } else {
+              statsRef.current.beaconMd = '<null>';
+              statsRef.current.beaconMdLen = 0;
+            }
+          } catch {}
+          const raw = (device as any).rawScanRecord;
+          if (raw && typeof raw === 'string') {
+            try { statsRef.current.beaconRaw = bytesToHex(base64ToBytes(raw)); } catch {}
+          }
+          const sd = (device as any).serviceData;
+          if (sd && typeof sd === 'object') {
+            try {
+              const parts: string[] = [];
+              for (const k of Object.keys(sd)) {
+                parts.push(k + '=' + bytesToHex(base64ToBytes(sd[k])));
+              }
+              statsRef.current.beaconServiceData = parts.join(' | ');
+            } catch {}
+          }
+        }
+
         const beacon = parseIBeacon(md);
         if (!beacon) return;
         statsRef.current.iBeacon++;
-        statsRef.current.lastIBeaconUuid = beacon.uuid;
         const target = targetUuidRef.current;
         if (target && beacon.uuid.toUpperCase() !== target.toUpperCase()) return;
         statsRef.current.matched++;

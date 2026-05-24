@@ -114,8 +114,11 @@ export const webviewHtml = `<!DOCTYPE html>
   </div>
   <div id="debug-bar">
     <div class="dbg-row"><span><span class="dbg-key">devices</span> <span id="dbg-total">0</span></span><span><span class="dbg-key">apple</span> <span id="dbg-apple">0</span></span><span><span class="dbg-key">iBeacon</span> <span id="dbg-ib">0</span></span><span><span class="dbg-key">match</span> <span id="dbg-match">0</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">UUID re\xE7u</span>: <span id="dbg-uuid">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">hex Apple</span>: <span id="dbg-hex" class="dbg-hex">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">apple sub-types</span>: <span id="dbg-sub">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">beacon MAC vu</span>: <span id="dbg-bvu">0</span> fois &middot; RSSI <span id="dbg-brssi">—</span> dBm &middot; <span id="dbg-bname">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">md (<span id="dbg-bmdlen">0</span>o)</span>: <span id="dbg-bmd" class="dbg-hex">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">raw scan</span>: <span id="dbg-braw" class="dbg-hex">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">srv data</span>: <span id="dbg-bsd" class="dbg-hex">—</span></span></div>
   </div>
   <div id="map"></div>
   <div id="rssi-bar">
@@ -403,8 +406,11 @@ export const webviewHtml = `<!DOCTYPE html>
   window.toggleScan = function() {
     if (scanning) {
       postRN({ type: 'stopScan' });
+      setStatus('Arr\xEAt du scan…', 'warn');
     } else {
       postRN({ type: 'startScan', uuid: cfg.uuid });
+      setStatus('D\xE9marrage du scan… (autoriser Bluetooth + GPS si demand\xE9)', 'warn');
+      snack('Si une popup permission appara\xEEt, accepte-la');
     }
   };
 
@@ -469,8 +475,14 @@ export const webviewHtml = `<!DOCTYPE html>
                            document.getElementById('dbg-apple').textContent = msg.apple;
                            document.getElementById('dbg-ib').textContent = msg.iBeacon;
                            document.getElementById('dbg-match').textContent = msg.matched;
-                           if (msg.lastIBeaconUuid) document.getElementById('dbg-uuid').textContent = msg.lastIBeaconUuid;
-                           if (msg.lastAppleHex) document.getElementById('dbg-hex').textContent = msg.lastAppleHex;
+                           document.getElementById('dbg-sub').textContent = msg.appleSubtypes || '—';
+                           document.getElementById('dbg-bvu').textContent = msg.beaconSeen || 0;
+                           document.getElementById('dbg-brssi').textContent = msg.beaconRssi || '—';
+                           document.getElementById('dbg-bname').textContent = msg.beaconName || '—';
+                           document.getElementById('dbg-bmdlen').textContent = msg.beaconMdLen || 0;
+                           document.getElementById('dbg-bmd').textContent = msg.beaconMd || '—';
+                           document.getElementById('dbg-braw').textContent = msg.beaconRaw || '—';
+                           document.getElementById('dbg-bsd').textContent = msg.beaconServiceData || '—';
                            break;
         case 'status':     setStatus(msg.msg, msg.state || ''); break;
         case 'error':      setStatus(msg.msg, 'error'); snack(msg.msg); break;
