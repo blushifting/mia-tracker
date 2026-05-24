@@ -8,6 +8,9 @@ on:
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -64,9 +67,31 @@ jobs:
           path: app/out/*.apk
           retention-days: 30
 
+      - name: Prepare release APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk out/mia-tracker.apk
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create nightly \
+            app/out/mia-tracker.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Nightly · ${GITHUB_SHA::7}" \
+            --notes "Build automatique depuis le commit ${GITHUB_SHA::7}.
+
+          URL stable : https://github.com/$GITHUB_REPOSITORY/releases/download/nightly/mia-tracker.apk" \
+            --prerelease
+
       - name: Summary
         run: |
           echo "### APK construit ✓" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Télécharge l'APK dans la section **Artifacts** de ce run." >> $GITHUB_STEP_SUMMARY
+          echo "**Téléchargement direct (sans login GitHub) :**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "https://github.com/${{ github.repository }}/releases/download/nightly/mia-tracker.apk" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           ls -lh out/ >> $GITHUB_STEP_SUMMARY
