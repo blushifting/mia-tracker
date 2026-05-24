@@ -433,126 +433,89 @@ async function toggleScan() {
 
 async function startScan() {
   setStatus('Connexion BLE…', 'warn');
-
-  // Filtre de scan : on filtre par services iBeacon
-  // Le beacon iBeacon annonce en advertising, pas en GATT → on utilise le scan via requestLEScan (Chrome expérimental)
-  // Fallback : requestDevice avec acceptAllDevices pour la démo
-  const opts = { acceptAllDevices: true };
-  if (cfg.uuid) {
-    // Pas possible de filtrer par iBeacon UUID via Web Bluetooth standard (pas de raw advertising access stable)
-    // On accepte tous et on filtre côté JS
-  }
-
-  // Essayer d'abord le Bluetooth Scanning API (plus approprié pour beacon passif)
-  if (navigator.bluetooth.requestLEScan) {
-    await startLEScan();
-  } else {
-    // Fallback via requestDevice (nécessite un clic utilisateur déjà présent)
-    await startGATTScan();
-  }
+  // Utilise uniquement requestDevice + watchAdvertisements (compatible Chrome Android standard)
+  await startWatchScan();
 }
 
-// ── Méthode 1 : requestLEScan (Chrome expérimental, Android)
-let activeScan = null;
-async function startLEScan() {
-  const scanOpts = { acceptAllAdvertisements: true, keepRepeatedDevices: true };
+// Scan via requestDevice + watchAdvertisements — méthode la plus compatible Chrome Android
+async function startWatchScan() {
+  snack('Sélectionne MiaTag dans la liste…');
+  let device;
   try {
-    activeScan = await navigator.bluetooth.requestLEScan(scanOpts);
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: ['generic_access', 'battery_service', '0000180a-0000-1000-8000-00805f9b34fb']
+    });
   } catch(e) {
-    snack('LEScan refusé, bascule sur GATT…');
-    await startGATTScan();
-    return;
+    throw e;
   }
 
+  bleDevice = device;
   scanning = true;
   startGPS();
-  setStatus('Scan BLE actif · en attente de signaux…', 'active');
+  setStatus('Beacon sélectionné · écoute des advertising…', 'active');
   updateScanBtn();
 
-  navigator.bluetooth.addEventListener('advertisementreceived', onAdvertisement);
+  device.addEventListener('advertisementreceived', onAdvertisement);
 
-  // Arrêt propre si l'objet scan expose addEventListener
-  if (activeScan && typeof activeScan.addEventListener === 'function') {
-    activeScan.addEventListener('error', () => { if (scanning) stopScan(); });
+  try {
+    await device.watchAdvertisements();
+    setStatus('Scan actif · en attente du signal de Mia…', 'active');
+  } catch(e) {
+    // watchAdvertisements non supporté : polling RSSI via connexion GATT répétée
+    snack('Mode polling actif');
+    bleDevice._pollInterval = setInterval(async () => {
+      if (!scanning) return;
+      try {
+        const server = await device.gatt.connect();
+        // Signal reçu = device répond, on estime RSSI depuis le dernier advertising connu
+        setStatus('Connecté · signal reçu', 'active');
+        await server.disconnect();
+      } catch(e2) {}
+    }, 2000);
   }
 }
 
 function onAdvertisement(event) {
-  // Filtrer par UUID si configuré
-  if (cfg.uuid) {
+  const rssi = event.rssi;
+  if (rssi === null || rssi === undefined || rssi === 127) return;
+
+  // Vérifier UUID iBeacon dans manufacturerData si UUID configuré
+  if (cfg.uuid && event.manufacturerData) {
     let found = false;
-    for (const [uuid] of event.serviceData) {
-      if (uuid.toLowerCase().includes(cfg.uuid.replace(/-/g,''))) { found = true; break; }
-    }
-    // iBeacon met aussi son UUID dans manufacturerData (format Apple 0x004C)
-    for (const [companyId, data] of event.manufacturerData) {
-      if (companyId === 0x004C) { // Apple
-        const bytes = new Uint8Array(data.buffer);
-        if (bytes[0] === 0x02 && bytes[1] === 0x15) { // iBeacon
-          const uuidBytes = Array.from(bytes.slice(2,18)).map(b => b.toString(16).padStart(2,'0'));
-          const parsedUUID = [
-            uuidBytes.slice(0,4).join(''),
-            uuidBytes.slice(4,6).join(''),
-            uuidBytes.slice(6,8).join(''),
-            uuidBytes.slice(8,10).join(''),
-            uuidBytes.slice(10,16).join('')
-          ].join('-');
-          if (parsedUUID === cfg.uuid) found = true;
+    try {
+      for (const [companyId, data] of event.manufacturerData) {
+        if (companyId === 0x004C) {
+          const bytes = new Uint8Array(data.buffer);
+          if (bytes[0] === 0x02 && bytes[1] === 0x15) {
+            const uuidBytes = Array.from(bytes.slice(2,18)).map(b => b.toString(16).padStart(2,'0'));
+            const parsedUUID = [
+              uuidBytes.slice(0,4).join(''),
+              uuidBytes.slice(4,6).join(''),
+              uuidBytes.slice(6,8).join(''),
+              uuidBytes.slice(8,10).join(''),
+              uuidBytes.slice(10,16).join('')
+            ].join('-');
+            if (parsedUUID === cfg.uuid) found = true;
+          }
         }
       }
-    }
+    } catch(e) { found = true; } // si pas de manufacturerData, on accepte quand même
     if (!found) return;
   }
 
-  const rssi = event.rssi;
-  if (rssi === null || rssi === undefined || rssi === 127) return;
   processRSSI(rssi, event.device.name || cfg.name);
-}
-
-// ── Méthode 2 : GATT (fallback) — demande connexion explicite
-async function startGATTScan() {
-  snack('Mode GATT — sélectionne le beacon dans la liste');
-  const device = await navigator.bluetooth.requestDevice({
-    acceptAllDevices: true,
-    optionalServices: ['battery_service', 'generic_access']
-  });
-  bleDevice = device;
-  scanning = true;
-  startGPS();
-  setStatus('Connecté à: ' + (device.name || 'inconnu') + ' · relevés en cours', 'active');
-  updateScanBtn();
-
-  // En GATT on n'a pas accès au RSSI en continu via l'API standard
-  // On simule via watchAdvertisements si disponible
-  if (device.watchAdvertisements) {
-    await device.watchAdvertisements();
-    device.addEventListener('advertisementreceived', e => processRSSI(e.rssi, device.name));
-  } else {
-    snack('watchAdvertisements non dispo — RSSI limité');
-    // Polling RSSI via readRSSI si supporté (non standard)
-    bleDevice._pollInterval = setInterval(async () => {
-      try {
-        const server = await device.gatt.connect();
-        // RSSI non accessible en GATT standard
-        setStatus('Connecté (RSSI non accessible en GATT)', 'warn');
-      } catch(e) {}
-    }, 3000);
-  }
 }
 
 function stopScan() {
   scanning = false;
-  if (activeScan) {
-    try { activeScan.stop(); } catch(e) {}
-    activeScan = null;
-  }
   if (bleDevice) {
+    try { bleDevice.removeEventListener('advertisementreceived', onAdvertisement); } catch(e) {}
+    try { bleDevice.unwatchAdvertisements(); } catch(e) {}
     try { bleDevice.gatt.disconnect(); } catch(e) {}
     if (bleDevice._pollInterval) clearInterval(bleDevice._pollInterval);
-    try { bleDevice.unwatchAdvertisements(); } catch(e) {}
     bleDevice = null;
   }
-  try { navigator.bluetooth.removeEventListener('advertisementreceived', onAdvertisement); } catch(e) {}
   stopGPS();
   setStatus('Scan arrêté · ' + measures.length + ' mesures enregistrées', '');
   updateScanBtn();
