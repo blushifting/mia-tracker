@@ -56,25 +56,27 @@ function parseIBeacon(manufacturerDataB64: string | null): IBeaconAdv | null {
   } catch {
     return null;
   }
-  // Variante 1 : bytes complets avec préfixe company ID Apple (4C 00) puis type iBeacon (02 15)
+  // Trois variantes possibles selon ce que livre BLE-PLX :
+  //  A) [4C 00] [02] [15] [UUID 16] [Maj 2] [Min 2] [Tx 1]  → 25 bytes, offset 4
+  //  B) [4C 00] [02] [XX] [UUID 16] [Maj 2] [Min 2] [Tx 1]  → length byte non-standard, offset 4
+  //  C) [02] [15] [UUID 16] [Maj 2] [Min 2] [Tx 1]          → company ID strippé, offset 2
   let offset = -1;
   if (
     bytes.length >= 25 &&
     bytes[0] === APPLE_COMPANY_ID[0] &&
     bytes[1] === APPLE_COMPANY_ID[1] &&
-    bytes[2] === IBEACON_TYPE[0] &&
-    bytes[3] === IBEACON_TYPE[1]
+    bytes[2] === IBEACON_TYPE[0]
+    // on n'exige plus byte[3] === 0x15 (length) : certaines impls divergent
   ) {
     offset = 4;
   } else if (
-    // Variante 2 : préfixe company ID strippé, payload commence directement par 02 15
     bytes.length >= 23 &&
     bytes[0] === IBEACON_TYPE[0] &&
     bytes[1] === IBEACON_TYPE[1]
   ) {
     offset = 2;
   }
-  if (offset < 0) return null;
+  if (offset < 0 || bytes.length < offset + 21) return null;
   const uuid = bytesToUuid(bytes.slice(offset, offset + 16));
   const major = (bytes[offset + 16] << 8) | bytes[offset + 17];
   const minor = (bytes[offset + 18] << 8) | bytes[offset + 19];
@@ -119,6 +121,8 @@ export default function App() {
     iBeacon: 0,
     matched: 0,
     appleSubtypes: '',
+    sub02Seen: 0,
+    sub02Hex: '',
     beaconSeen: 0,
     beaconName: '',
     beaconRssi: 0,
@@ -160,13 +164,11 @@ export default function App() {
       return;
     }
 
-    postToWebview({ type: 'status', msg: 'Demande permission GPS…', state: 'warn' });
-    const loc = await Location.requestForegroundPermissionsAsync();
-    if (loc.status !== 'granted') {
-      postToWebview({ type: 'error', msg: 'Permission GPS refusée' });
-      return;
-    }
-
+    postToWebview({ type: 'status', msg: 'Démarrage GPS…', state: 'warn' });
+    // On ne passe plus par Location.requestForegroundPermissionsAsync (qui hang
+    // sur 2e appel quand la perm est déjà accordée). ACCESS_FINE_LOCATION
+    // est déjà accordé via PermissionsAndroid ci-dessus, donc watchPositionAsync
+    // marche directement.
     try {
       locationSubRef.current = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
@@ -176,6 +178,7 @@ export default function App() {
       );
     } catch (e: any) {
       postToWebview({ type: 'error', msg: 'GPS: ' + (e?.message || 'erreur') });
+      // on continue quand même : le scan BLE peut être utile sans GPS
     }
 
     try {
@@ -201,6 +204,7 @@ export default function App() {
     scanningRef.current = true;
     statsRef.current = {
       total: 0, apple: 0, iBeacon: 0, matched: 0, appleSubtypes: '',
+      sub02Seen: 0, sub02Hex: '',
       beaconSeen: 0, beaconName: '', beaconRssi: 0, beaconMdLen: 0,
       beaconMd: '', beaconRaw: '', beaconServiceData: '',
     };
@@ -220,7 +224,7 @@ export default function App() {
 
     manager.startDeviceScan(
       null,
-      { scanMode: ScanMode.LowLatency, allowDuplicates: true } as any,
+      { scanMode: ScanMode.LowLatency, allowDuplicates: true, legacyScan: true, callbackType: 1 } as any,
       (error, device: Device | null) => {
         if (error) {
           postToWebview({ type: 'error', msg: 'Scan BLE: ' + error.message });
@@ -239,6 +243,13 @@ export default function App() {
             if (b.length >= 3) {
               const subtype = '0x' + b[2].toString(16).padStart(2, '0');
               appleSubtypeCountsRef.current[subtype] = (appleSubtypeCountsRef.current[subtype] || 0) + 1;
+              // Si on voit un sous-type 0x02 (= iBeacon), on capture le packet entier pour analyse
+              if (b[2] === 0x02) {
+                statsRef.current.sub02Seen++;
+                if (!statsRef.current.sub02Hex) {
+                  statsRef.current.sub02Hex = bytesToHex(b);
+                }
+              }
             }
           } catch {}
         }

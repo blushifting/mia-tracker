@@ -115,6 +115,8 @@ export const webviewHtml = `<!DOCTYPE html>
   <div id="debug-bar">
     <div class="dbg-row"><span><span class="dbg-key">devices</span> <span id="dbg-total">0</span></span><span><span class="dbg-key">apple</span> <span id="dbg-apple">0</span></span><span><span class="dbg-key">iBeacon</span> <span id="dbg-ib">0</span></span><span><span class="dbg-key">match</span> <span id="dbg-match">0</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">apple sub-types</span>: <span id="dbg-sub">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">sous-type 0x02 (iBeacon)</span>: <span id="dbg-s02">0</span> packets</span></div>
+    <div class="dbg-row"><span><span class="dbg-key">premier hex 0x02</span>: <span id="dbg-s02h" class="dbg-hex">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">beacon MAC vu</span>: <span id="dbg-bvu">0</span> fois &middot; RSSI <span id="dbg-brssi">—</span> dBm &middot; <span id="dbg-bname">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">md (<span id="dbg-bmdlen">0</span>o)</span>: <span id="dbg-bmd" class="dbg-hex">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">raw scan</span>: <span id="dbg-braw" class="dbg-hex">—</span></span></div>
@@ -476,6 +478,8 @@ export const webviewHtml = `<!DOCTYPE html>
                            document.getElementById('dbg-ib').textContent = msg.iBeacon;
                            document.getElementById('dbg-match').textContent = msg.matched;
                            document.getElementById('dbg-sub').textContent = msg.appleSubtypes || '—';
+                           document.getElementById('dbg-s02').textContent = msg.sub02Seen || 0;
+                           if (msg.sub02Hex) document.getElementById('dbg-s02h').textContent = msg.sub02Hex;
                            document.getElementById('dbg-bvu').textContent = msg.beaconSeen || 0;
                            document.getElementById('dbg-brssi').textContent = msg.beaconRssi || '—';
                            document.getElementById('dbg-bname').textContent = msg.beaconName || '—';
