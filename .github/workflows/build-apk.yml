@@ -50,15 +50,15 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build debug APK
+      - name: Build release APK (JS bundle inclus, signé debug-key)
         working-directory: app/android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/debug/app-debug.apk out/mia-tracker-${{ github.sha }}.apk
-          cp android/app/build/outputs/apk/debug/app-debug.apk out/mia-tracker-latest.apk
+          cp android/app/build/outputs/apk/release/app-release.apk out/mia-tracker.apk
+          cp android/app/build/outputs/apk/release/app-release.apk out/mia-tracker-${{ github.sha }}.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -66,9 +66,6 @@ jobs:
           name: mia-tracker-apk
           path: app/out/*.apk
           retention-days: 30
-
-      - name: Prepare release APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk out/mia-tracker.apk
 
       - name: Publish nightly release
         env:
