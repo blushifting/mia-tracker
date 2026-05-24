@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Mia Tracker",
+    "slug": "mia-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.blushifting.miatracker",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
+          "bluetoothAlwaysPermission": "Mia Tracker a besoin du Bluetooth pour scanner le beacon du collier de Mia."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Mia Tracker utilise le GPS pour localiser le beacon."
+        }
+      ]
+    ]
+  }
+}
