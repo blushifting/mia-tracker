@@ -453,11 +453,11 @@ async function startScan() {
 }
 
 // ── Méthode 1 : requestLEScan (Chrome expérimental, Android)
+let activeScan = null;
 async function startLEScan() {
   const scanOpts = { acceptAllAdvertisements: true, keepRepeatedDevices: true };
-  let scan;
   try {
-    scan = await navigator.bluetooth.requestLEScan(scanOpts);
+    activeScan = await navigator.bluetooth.requestLEScan(scanOpts);
   } catch(e) {
     snack('LEScan refusé, bascule sur GATT…');
     await startGATTScan();
@@ -471,8 +471,10 @@ async function startLEScan() {
 
   navigator.bluetooth.addEventListener('advertisementreceived', onAdvertisement);
 
-  // Arrêt propre quand scan se ferme
-  scan.addEventListener('error', () => { if (scanning) stopScan(); });
+  // Arrêt propre si l'objet scan expose addEventListener
+  if (activeScan && typeof activeScan.addEventListener === 'function') {
+    activeScan.addEventListener('error', () => { if (scanning) stopScan(); });
+  }
 }
 
 function onAdvertisement(event) {
@@ -540,6 +542,10 @@ async function startGATTScan() {
 
 function stopScan() {
   scanning = false;
+  if (activeScan) {
+    try { activeScan.stop(); } catch(e) {}
+    activeScan = null;
+  }
   if (bleDevice) {
     try { bleDevice.gatt.disconnect(); } catch(e) {}
     if (bleDevice._pollInterval) clearInterval(bleDevice._pollInterval);
