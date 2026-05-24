@@ -433,11 +433,33 @@ async function toggleScan() {
 
 async function startScan() {
   setStatus('Connexion BLE…', 'warn');
-  // Utilise uniquement requestDevice + watchAdvertisements (compatible Chrome Android standard)
+  // Essayer requestLEScan d'abord (scan passif), puis fallback watchAdvertisements
+  if (navigator.bluetooth.requestLEScan) {
+    try {
+      await startLEScan();
+      return;
+    } catch(e) {
+      snack('LEScan échoué, bascule…');
+    }
+  }
   await startWatchScan();
 }
 
-// Scan via requestDevice + watchAdvertisements — méthode la plus compatible Chrome Android
+// ── Méthode 1 : requestLEScan (scan passif, ne nécessite pas de sélection)
+let activeScan = null;
+async function startLEScan() {
+  activeScan = await navigator.bluetooth.requestLEScan({
+    acceptAllAdvertisements: true,
+    keepRepeatedDevices: true
+  });
+  scanning = true;
+  startGPS();
+  setStatus('Scan passif actif · en attente du signal de Mia…', 'active');
+  updateScanBtn();
+  navigator.bluetooth.addEventListener('advertisementreceived', onAdvertisement);
+}
+
+// ── Méthode 2 : requestDevice + watchAdvertisements (fallback)
 async function startWatchScan() {
   snack('Sélectionne MiaTag dans la liste…');
   let device;
@@ -462,17 +484,8 @@ async function startWatchScan() {
     await device.watchAdvertisements();
     setStatus('Scan actif · en attente du signal de Mia…', 'active');
   } catch(e) {
-    // watchAdvertisements non supporté : polling RSSI via connexion GATT répétée
-    snack('Mode polling actif');
-    bleDevice._pollInterval = setInterval(async () => {
-      if (!scanning) return;
-      try {
-        const server = await device.gatt.connect();
-        // Signal reçu = device répond, on estime RSSI depuis le dernier advertising connu
-        setStatus('Connecté · signal reçu', 'active');
-        await server.disconnect();
-      } catch(e2) {}
-    }, 2000);
+    snack('watchAdvertisements non supporté');
+    setStatus('Méthode non supportée sur cet appareil', 'error');
   }
 }
 
@@ -509,6 +522,11 @@ function onAdvertisement(event) {
 
 function stopScan() {
   scanning = false;
+  if (activeScan) {
+    try { activeScan.stop(); } catch(e) {}
+    activeScan = null;
+  }
+  try { navigator.bluetooth.removeEventListener('advertisementreceived', onAdvertisement); } catch(e) {}
   if (bleDevice) {
     try { bleDevice.removeEventListener('advertisementreceived', onAdvertisement); } catch(e) {}
     try { bleDevice.unwatchAdvertisements(); } catch(e) {}
