@@ -23,6 +23,11 @@ android {
   }
 }
 
+repositories {
+  mavenCentral()
+}
+
 dependencies {
   implementation project(':expo-modules-core')
+  implementation 'org.altbeacon:android-beacon-library:2.21.0'
 }
