@@ -1,5 +1,8 @@
 package expo.modules.ibeaconscanner
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -13,22 +16,16 @@ import org.altbeacon.beacon.Region
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Module natif iBeacon basé sur la lib AltBeacon (Android Beacon Library).
+ * Module natif iBeacon basé sur AltBeacon (Android Beacon Library).
  *
- * Pourquoi : sur Android 14+ (et clairement Pixel 10 / Android 16), un scan
- * BluetoothLeScanner standard, même avec un ScanFilter explicite sur
- * manufacturer data Apple 0x004C + pattern 02 15, ne livre PAS les
- * advertising iBeacon (les autres sous-types Apple, AirTag/AirPods, passent
- * normalement). AltBeacon utilise des techniques de scan/parsing qui
- * contournent ce filtrage Android.
+ * Sur Android 8+, AltBeacon utilise par défaut le JobScheduler (scan par lots),
+ * ce qui livre n=0 en foreground. On désactive le JobScheduler et on active le
+ * foreground service scanning pour obtenir un scan continu avec une notification.
+ *
+ * Permissions requises (dans ce manifest) :
+ *   FOREGROUND_SERVICE + FOREGROUND_SERVICE_CONNECTED_DEVICE (Android 14+)
  *
  * Layout iBeacon : m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24
- *   - bytes 0-1 : company ID (4C 00) — implicite
- *   - bytes 2-3 : type+length 02 15
- *   - bytes 4-19 : UUID
- *   - bytes 20-21 : major
- *   - bytes 22-23 : minor
- *   - byte 24 : tx power
  */
 class IBeaconScannerModule : Module() {
 
@@ -36,6 +33,8 @@ class IBeaconScannerModule : Module() {
     private const val IBEACON_LAYOUT =
       "m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"
     private val REGION = Region("mia-tracker-region", null, null, null)
+    private const val NOTIF_ID = 456
+    private const val CHANNEL_ID = "mia-beacon-scan"
   }
 
   private var beaconManager: BeaconManager? = null
@@ -50,11 +49,11 @@ class IBeaconScannerModule : Module() {
 
     Events("onIBeacon", "onDiag")
 
-    Function("ping") { -> "pong-altbeacon" }
+    Function("ping") { -> "pong-altbeacon-v2" }
 
     Function("start") { uuid: String? ->
       targetUuid = uuid?.uppercase()
-      diag("start_called uuid=$targetUuid (AltBeacon)")
+      diag("start_called uuid=$targetUuid (AltBeacon v2)")
 
       val ctx: Context = appContext.reactContext ?: run {
         diag("no_react_context")
@@ -62,19 +61,45 @@ class IBeaconScannerModule : Module() {
       }
 
       // Tout le setup AltBeacon DOIT tourner sur le main thread (LiveData
-      // observeForever exige le main thread). Sinon : "Method addObserver
-      // must be called on the main thread"
+      // observeForever exige le main thread).
       mainHandler.post {
         try {
-          val mgr = BeaconManager.getInstanceForApplication(ctx.applicationContext)
+          val appCtx = ctx.applicationContext
+          val mgr = BeaconManager.getInstanceForApplication(appCtx)
           mgr.beaconParsers.clear()
           mgr.beaconParsers.add(BeaconParser().setBeaconLayout(IBEACON_LAYOUT))
 
+          // Désactive le JobScheduler (mode batch Android 8+) — utilise à la
+          // place le foreground service pour un scan continu sans pauses.
+          mgr.setEnableScheduledScanJobs(false)
           mgr.foregroundScanPeriod = 1100L
           mgr.foregroundBetweenScanPeriod = 0L
 
-          notifier?.let { mgr.removeRangeNotifier(it) }
+          // Canal notification (obligatoire Android 8+)
+          val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+          if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+            val channel = NotificationChannel(
+              CHANNEL_ID,
+              "Scan beacon Mia",
+              NotificationManager.IMPORTANCE_LOW
+            )
+            nm.createNotificationChannel(channel)
+          }
 
+          val notif = Notification.Builder(appCtx, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Mia Tracker")
+            .setContentText("Recherche du beacon de Mia...")
+            .build()
+
+          try {
+            mgr.enableForegroundServiceScanning(notif, NOTIF_ID)
+            diag("foreground_service_enabled")
+          } catch (e: Throwable) {
+            diag("foreground_service_err:${e.message}")
+          }
+
+          notifier?.let { mgr.removeRangeNotifier(it) }
           rangeCount.set(0)
           beaconCount.set(0)
 
@@ -109,7 +134,7 @@ class IBeaconScannerModule : Module() {
 
           try {
             mgr.startRangingBeacons(REGION)
-            diag("ranging_started_ok (main thread)")
+            diag("ranging_started_ok (foreground service)")
           } catch (e: Throwable) {
             diag("start_ranging_threw:${e.message}")
           }
@@ -127,6 +152,7 @@ class IBeaconScannerModule : Module() {
           beaconManager?.let { mgr ->
             notifier?.let { mgr.removeRangeNotifier(it) }
             mgr.stopRangingBeacons(REGION)
+            try { mgr.disableForegroundServiceScanning() } catch (_: Throwable) {}
           }
         } catch (_: Throwable) {}
         notifier = null
@@ -141,6 +167,7 @@ class IBeaconScannerModule : Module() {
           beaconManager?.let { mgr ->
             notifier?.let { mgr.removeRangeNotifier(it) }
             mgr.stopRangingBeacons(REGION)
+            try { mgr.disableForegroundServiceScanning() } catch (_: Throwable) {}
           }
         } catch (_: Throwable) {}
         notifier = null

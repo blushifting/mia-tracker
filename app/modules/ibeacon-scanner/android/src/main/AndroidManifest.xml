@@ -1,1 +1,6 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- AltBeacon foreground service — obligatoire Android 8+ pour scan continu -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <!-- Android 14+ : type connectedDevice requis par BeaconService d'AltBeacon -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+</manifest>
