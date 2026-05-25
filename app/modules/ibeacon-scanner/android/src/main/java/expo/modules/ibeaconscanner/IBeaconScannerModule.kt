@@ -12,12 +12,19 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.Timer
+import java.util.TimerTask
+import java.util.concurrent.atomic.AtomicInteger
 
 class IBeaconScannerModule : Module() {
 
   private var scanner: BluetoothLeScanner? = null
   private var callback: ScanCallback? = null
   private var targetUuid: String? = null
+  private var diagTimer: Timer? = null
+  private val anyResult = AtomicInteger(0)
+  private val applePattern = AtomicInteger(0)
+  private val iBeaconPattern = AtomicInteger(0)
 
   override fun definition() = ModuleDefinition {
     Name("IBeaconScanner")
@@ -46,16 +53,11 @@ class IBeaconScannerModule : Module() {
       if (!adapter.isEnabled) { diag("bt_disabled"); return@Function }
       val s = adapter.bluetoothLeScanner ?: run { diag("no_le_scanner"); return@Function }
 
-      // Filter relâché : manufacturer Apple (0x004C) + byte[0]=0x02 (iBeacon type)
-      // Le byte[1] (length 0x15) n'est pas vérifié → tolérant aux firmwares non standards
-      val filter = try {
-        ScanFilter.Builder()
-          .setManufacturerData(
-            0x004C,
-            byteArrayOf(0x02),
-            byteArrayOf(0xFF.toByte())
-          )
-          .build()
+      // Filtre match-all explicite : on n'applique aucun critère mais Android
+      // semble parfois mieux livrer les advertising avec un ScanFilter présent
+      // (même vide) qu'avec une liste null.
+      val matchAll = try {
+        ScanFilter.Builder().build()
       } catch (e: Throwable) {
         diag("filter_build_failed:${e.message}")
         return@Function
@@ -69,14 +71,16 @@ class IBeaconScannerModule : Module() {
         .setLegacy(true)
         .build()
 
+      anyResult.set(0)
+      applePattern.set(0)
+      iBeaconPattern.set(0)
+
       val cb = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-          diag("scan_result rssi=${result.rssi} addr=${result.device?.address}")
           handleResult(result)
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
-          diag("batch_results n=${results.size}")
           for (r in results) handleResult(r)
         }
 
@@ -87,11 +91,22 @@ class IBeaconScannerModule : Module() {
       callback = cb
       scanner = s
       try {
-        s.startScan(listOf(filter), settings, cb)
-        diag("scan_started_ok")
+        s.startScan(listOf(matchAll), settings, cb)
+        diag("scan_started_ok (no manufacturer filter)")
       } catch (e: Throwable) {
         diag("start_scan_threw:${e.message}")
+        return@Function
       }
+
+      // Tick périodique pour reporter les compteurs sans spam d'events
+      diagTimer?.cancel()
+      val t = Timer()
+      t.scheduleAtFixedRate(object : TimerTask() {
+        override fun run() {
+          diag("tick any=${anyResult.get()} apple=${applePattern.get()} iBeacon=${iBeaconPattern.get()}")
+        }
+      }, 1500L, 1500L)
+      diagTimer = t
     }
 
     Function("stop") {
@@ -114,13 +129,18 @@ class IBeaconScannerModule : Module() {
     try { callback?.let { scanner?.stopScan(it) } } catch (_: Throwable) {}
     callback = null
     scanner = null
+    diagTimer?.cancel()
+    diagTimer = null
   }
 
   private fun handleResult(result: ScanResult) {
+    anyResult.incrementAndGet()
     val record = result.scanRecord ?: return
     val md = record.getManufacturerSpecificData(0x004C) ?: return
+    applePattern.incrementAndGet()
     if (md.size < 23) return
     if (md[0] != 0x02.toByte()) return
+    iBeaconPattern.incrementAndGet()
 
     val uuidBytes = md.copyOfRange(2, 18)
     val bb = ByteBuffer.wrap(uuidBytes).order(ByteOrder.BIG_ENDIAN)
