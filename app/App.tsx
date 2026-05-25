@@ -10,7 +10,7 @@ import {
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { BleManager, Device, ScanMode, State } from 'react-native-ble-plx';
 import * as Location from 'expo-location';
-import IBeaconScanner, { IBeaconEvent } from 'ibeacon-scanner';
+import IBeaconScanner, { IBeaconEvent, DiagEvent } from 'ibeacon-scanner';
 import { webviewHtml } from './webviewHtml';
 
 const APPLE_COMPANY_ID = [0x4c, 0x00]; // little-endian
@@ -174,6 +174,8 @@ export default function App() {
     nativeMatched: 0,
     nativeLastUuid: '',
     nativeLastRssi: 0,
+    nativePing: '',
+    nativeDiag: '',
     beaconSeen: 0,
     beaconName: '',
     beaconRssi: 0,
@@ -188,24 +190,31 @@ export default function App() {
 
   useEffect(() => {
     bleManagerRef.current = new BleManager();
-    // Souscription au scanner natif iBeacon (module Kotlin local, contourne le
-    // filtrage Android qui drop les iBeacons quand on scanne sans ScanFilter
-    // sur manufacturer data).
-    const sub = IBeaconScanner.addListener('onIBeacon', (e: IBeaconEvent) => {
-      if (e.uuid === 'ERROR') {
-        postToWebview({ type: 'error', msg: 'Scan natif: code ' + e.major });
-        return;
-      }
+    // Ping le module natif au démarrage : si "pong-v2" arrive, le natif est OK
+    try {
+      const pong = IBeaconScanner.ping();
+      statsRef.current.nativePing = pong || '<no return>';
+    } catch (e: any) {
+      statsRef.current.nativePing = 'CRASH: ' + (e?.message || 'unknown');
+    }
+
+    const subI = IBeaconScanner.addListener('onIBeacon', (e: IBeaconEvent) => {
       statsRef.current.nativeIBeacon++;
       statsRef.current.nativeLastUuid = e.uuid;
       statsRef.current.nativeLastRssi = e.rssi;
-      const target = targetUuidRef.current;
-      if (target && e.uuid.toUpperCase() !== target.toUpperCase()) return;
-      statsRef.current.nativeMatched++;
-      postToWebview({ type: 'rssi', rssi: e.rssi, name: 'Mia (native)' });
+      if (e.match) {
+        statsRef.current.nativeMatched++;
+        postToWebview({ type: 'rssi', rssi: e.rssi, name: 'Mia (native)' });
+      }
     });
+    const subD = IBeaconScanner.addListener('onDiag', (e: DiagEvent) => {
+      // Garde seulement le dernier message (rolling). Tronque si trop long.
+      statsRef.current.nativeDiag = (e.msg || '').slice(0, 90);
+    });
+
     return () => {
-      try { sub.remove(); } catch {}
+      try { subI.remove(); } catch {}
+      try { subD.remove(); } catch {}
       try { IBeaconScanner.stop(); } catch {}
       try { bleManagerRef.current?.stopDeviceScan(); } catch {}
       try { bleManagerRef.current?.destroy(); } catch {}
@@ -271,11 +280,13 @@ export default function App() {
     }
 
     scanningRef.current = true;
+    const keepPing = statsRef.current.nativePing;
     statsRef.current = {
       total: 0, apple: 0, iBeacon: 0, matched: 0, appleSubtypes: '',
       sub02Seen: 0, sub02Hex: '',
       hasRaw: 0, firstRawHex: '', rawIBeacon: 0,
       nativeIBeacon: 0, nativeMatched: 0, nativeLastUuid: '', nativeLastRssi: 0,
+      nativePing: keepPing, nativeDiag: '',
       beaconSeen: 0, beaconName: '', beaconRssi: 0, beaconMdLen: 0,
       beaconMd: '', beaconRaw: '', beaconServiceData: '',
     };

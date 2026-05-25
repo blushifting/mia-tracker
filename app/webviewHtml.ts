@@ -121,6 +121,8 @@ export const webviewHtml = `<!DOCTYPE html>
     <div class="dbg-row"><span><span class="dbg-key">premier raw</span>: <span id="dbg-frh" class="dbg-hex">—</span></span></div>
     <div class="dbg-row" style="border-top:1px solid var(--accent);padding-top:4px;margin-top:4px;"><span><span class="dbg-key" style="color:var(--accent);">SCAN NATIF iBeacon</span>: <span id="dbg-nat">0</span> packets &middot; match: <span id="dbg-natm">0</span> &middot; rssi <span id="dbg-natr">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">UUID natif</span>: <span id="dbg-natu">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">ping natif</span>: <span id="dbg-natp">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">beacon MAC vu</span>: <span id="dbg-bvu">0</span> fois &middot; RSSI <span id="dbg-brssi">—</span> dBm &middot; <span id="dbg-bname">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">md (<span id="dbg-bmdlen">0</span>o)</span>: <span id="dbg-bmd" class="dbg-hex">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">raw scan</span>: <span id="dbg-braw" class="dbg-hex">—</span></span></div>
@@ -491,6 +493,8 @@ export const webviewHtml = `<!DOCTYPE html>
                            document.getElementById('dbg-natm').textContent = msg.nativeMatched || 0;
                            document.getElementById('dbg-natr').textContent = msg.nativeLastRssi || '—';
                            if (msg.nativeLastUuid) document.getElementById('dbg-natu').textContent = msg.nativeLastUuid;
+                           if (msg.nativePing) document.getElementById('dbg-natp').textContent = msg.nativePing;
+                           if (msg.nativeDiag) document.getElementById('dbg-natd').textContent = msg.nativeDiag;
                            document.getElementById('dbg-bvu').textContent = msg.beaconSeen || 0;
                            document.getElementById('dbg-brssi').textContent = msg.beaconRssi || '—';
                            document.getElementById('dbg-bname').textContent = msg.beaconName || '—';

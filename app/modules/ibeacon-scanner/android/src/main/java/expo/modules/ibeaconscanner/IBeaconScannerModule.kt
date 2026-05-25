@@ -22,73 +22,92 @@ class IBeaconScannerModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("IBeaconScanner")
 
-    Events("onIBeacon")
+    Events("onIBeacon", "onDiag")
+
+    // Ping synchrone pour vérifier que le module natif est bien chargé côté JS
+    Function("ping") { ->
+      "pong-v2"
+    }
 
     Function("start") { uuid: String? ->
       targetUuid = uuid?.uppercase()
       stopInternal()
 
-      val ctx: Context = appContext.reactContext ?: return@Function
-      val btManager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-      val adapter = btManager?.adapter ?: return@Function
-      val s = adapter.bluetoothLeScanner ?: return@Function
+      diag("start_called uuid=$targetUuid")
 
-      // ScanFilter explicite : manufacturer Apple (0x004C), pattern iBeacon (0x02 0x15)
-      // C'est ce qui débloque la livraison des iBeacons sur Android 14+ (le scan sans
-      // filtre les drop silencieusement).
-      val filter = ScanFilter.Builder()
-        .setManufacturerData(
-          0x004C,
-          byteArrayOf(0x02, 0x15),
-          byteArrayOf(0xFF.toByte(), 0xFF.toByte())
-        )
-        .build()
+      val ctx: Context = appContext.reactContext ?: run {
+        diag("no_react_context")
+        return@Function
+      }
+      val btManager = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+      if (btManager == null) { diag("no_bt_manager"); return@Function }
+      val adapter = btManager.adapter
+      if (adapter == null) { diag("no_bt_adapter"); return@Function }
+      if (!adapter.isEnabled) { diag("bt_disabled"); return@Function }
+      val s = adapter.bluetoothLeScanner ?: run { diag("no_le_scanner"); return@Function }
+
+      // Filter relâché : manufacturer Apple (0x004C) + byte[0]=0x02 (iBeacon type)
+      // Le byte[1] (length 0x15) n'est pas vérifié → tolérant aux firmwares non standards
+      val filter = try {
+        ScanFilter.Builder()
+          .setManufacturerData(
+            0x004C,
+            byteArrayOf(0x02),
+            byteArrayOf(0xFF.toByte())
+          )
+          .build()
+      } catch (e: Throwable) {
+        diag("filter_build_failed:${e.message}")
+        return@Function
+      }
 
       val settings = ScanSettings.Builder()
         .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
         .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
         .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
         .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+        .setLegacy(true)
         .build()
 
       val cb = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+          diag("scan_result rssi=${result.rssi} addr=${result.device?.address}")
           handleResult(result)
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
+          diag("batch_results n=${results.size}")
           for (r in results) handleResult(r)
         }
 
         override fun onScanFailed(errorCode: Int) {
-          sendEvent(
-            "onIBeacon",
-            mapOf(
-              "uuid" to "ERROR",
-              "major" to errorCode,
-              "minor" to 0,
-              "txPower" to 0,
-              "rssi" to 0,
-              "deviceId" to "scan_failed"
-            )
-          )
+          diag("scan_failed code=$errorCode")
         }
       }
       callback = cb
       scanner = s
       try {
         s.startScan(listOf(filter), settings, cb)
-      } catch (_: Throwable) {
+        diag("scan_started_ok")
+      } catch (e: Throwable) {
+        diag("start_scan_threw:${e.message}")
       }
     }
 
     Function("stop") {
       stopInternal()
+      diag("stopped")
     }
 
     OnDestroy {
       stopInternal()
     }
+  }
+
+  private fun diag(msg: String) {
+    try {
+      sendEvent("onDiag", mapOf("msg" to msg))
+    } catch (_: Throwable) {}
   }
 
   private fun stopInternal() {
@@ -102,7 +121,6 @@ class IBeaconScannerModule : Module() {
     val md = record.getManufacturerSpecificData(0x004C) ?: return
     if (md.size < 23) return
     if (md[0] != 0x02.toByte()) return
-    // md[1] = length byte (typiquement 0x15), on ne vérifie pas pour tolérance
 
     val uuidBytes = md.copyOfRange(2, 18)
     val bb = ByteBuffer.wrap(uuidBytes).order(ByteOrder.BIG_ENDIAN)
@@ -111,11 +129,11 @@ class IBeaconScannerModule : Module() {
     val uuid = UUID(msb, lsb).toString().uppercase()
 
     val tgt = targetUuid
-    if (!tgt.isNullOrEmpty() && uuid != tgt) return
+    val match = tgt.isNullOrEmpty() || uuid == tgt
 
     val major = ((md[18].toInt() and 0xFF) shl 8) or (md[19].toInt() and 0xFF)
     val minor = ((md[20].toInt() and 0xFF) shl 8) or (md[21].toInt() and 0xFF)
-    val tx = md[22].toInt() // signed byte → int
+    val tx = md[22].toInt()
 
     sendEvent(
       "onIBeacon",
@@ -125,7 +143,8 @@ class IBeaconScannerModule : Module() {
         "minor" to minor,
         "txPower" to tx,
         "rssi" to result.rssi,
-        "deviceId" to (result.device?.address ?: "")
+        "deviceId" to (result.device?.address ?: ""),
+        "match" to match
       )
     )
   }
