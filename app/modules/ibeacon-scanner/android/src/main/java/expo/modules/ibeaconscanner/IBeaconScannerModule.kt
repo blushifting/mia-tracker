@@ -1,6 +1,8 @@
 package expo.modules.ibeaconscanner
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.altbeacon.beacon.Beacon
@@ -41,6 +43,7 @@ class IBeaconScannerModule : Module() {
   private var targetUuid: String? = null
   private val rangeCount = AtomicInteger(0)
   private val beaconCount = AtomicInteger(0)
+  private val mainHandler = Handler(Looper.getMainLooper())
 
   override fun definition() = ModuleDefinition {
     Name("IBeaconScanner")
@@ -58,84 +61,91 @@ class IBeaconScannerModule : Module() {
         return@Function
       }
 
-      try {
-        val mgr = BeaconManager.getInstanceForApplication(ctx.applicationContext)
-        mgr.beaconParsers.clear()
-        mgr.beaconParsers.add(BeaconParser().setBeaconLayout(IBEACON_LAYOUT))
-
-        // Intervalle de scan agressif pour avoir le RSSI le plus frais possible
-        mgr.foregroundScanPeriod = 1100L
-        mgr.foregroundBetweenScanPeriod = 0L
-
-        // Détacher l'ancien notifier si présent
-        notifier?.let { mgr.removeRangeNotifier(it) }
-
-        rangeCount.set(0)
-        beaconCount.set(0)
-
-        val n = RangeNotifier { beacons: Collection<Beacon>, _: Region ->
-          rangeCount.incrementAndGet()
-          beaconCount.addAndGet(beacons.size)
-          diag("range n=${beacons.size} total=${beaconCount.get()}")
-          for (b in beacons) {
-            val uuid = b.id1?.toString()?.uppercase() ?: continue
-            val major = try { b.id2.toInt() } catch (_: Throwable) { 0 }
-            val minor = try { b.id3.toInt() } catch (_: Throwable) { 0 }
-            val tx = b.txPower
-            val rssi = b.rssi
-            val tgt = targetUuid
-            val match = tgt.isNullOrEmpty() || uuid == tgt
-            sendEvent(
-              "onIBeacon",
-              mapOf(
-                "uuid" to uuid,
-                "major" to major,
-                "minor" to minor,
-                "txPower" to tx,
-                "rssi" to rssi,
-                "deviceId" to (b.bluetoothAddress ?: ""),
-                "match" to match
-              )
-            )
-          }
-        }
-        notifier = n
-        mgr.addRangeNotifier(n)
-
+      // Tout le setup AltBeacon DOIT tourner sur le main thread (LiveData
+      // observeForever exige le main thread). Sinon : "Method addObserver
+      // must be called on the main thread"
+      mainHandler.post {
         try {
-          mgr.startRangingBeacons(REGION)
-          diag("ranging_started_ok")
-        } catch (e: Throwable) {
-          diag("start_ranging_threw:${e.message}")
-        }
+          val mgr = BeaconManager.getInstanceForApplication(ctx.applicationContext)
+          mgr.beaconParsers.clear()
+          mgr.beaconParsers.add(BeaconParser().setBeaconLayout(IBEACON_LAYOUT))
 
-        beaconManager = mgr
-      } catch (e: Throwable) {
-        diag("init_threw:${e.message}")
+          mgr.foregroundScanPeriod = 1100L
+          mgr.foregroundBetweenScanPeriod = 0L
+
+          notifier?.let { mgr.removeRangeNotifier(it) }
+
+          rangeCount.set(0)
+          beaconCount.set(0)
+
+          val n = RangeNotifier { beacons: Collection<Beacon>, _: Region ->
+            rangeCount.incrementAndGet()
+            beaconCount.addAndGet(beacons.size)
+            diag("range n=${beacons.size} total=${beaconCount.get()}")
+            for (b in beacons) {
+              val uuid2 = b.id1?.toString()?.uppercase() ?: continue
+              val major = try { b.id2.toInt() } catch (_: Throwable) { 0 }
+              val minor = try { b.id3.toInt() } catch (_: Throwable) { 0 }
+              val tx = b.txPower
+              val rssi = b.rssi
+              val tgt = targetUuid
+              val match = tgt.isNullOrEmpty() || uuid2 == tgt
+              sendEvent(
+                "onIBeacon",
+                mapOf(
+                  "uuid" to uuid2,
+                  "major" to major,
+                  "minor" to minor,
+                  "txPower" to tx,
+                  "rssi" to rssi,
+                  "deviceId" to (b.bluetoothAddress ?: ""),
+                  "match" to match
+                )
+              )
+            }
+          }
+          notifier = n
+          mgr.addRangeNotifier(n)
+
+          try {
+            mgr.startRangingBeacons(REGION)
+            diag("ranging_started_ok (main thread)")
+          } catch (e: Throwable) {
+            diag("start_ranging_threw:${e.message}")
+          }
+
+          beaconManager = mgr
+        } catch (e: Throwable) {
+          diag("init_threw:${e.message}")
+        }
       }
     }
 
     Function("stop") {
-      try {
-        beaconManager?.let { mgr ->
-          notifier?.let { mgr.removeRangeNotifier(it) }
-          mgr.stopRangingBeacons(REGION)
-        }
-      } catch (_: Throwable) {}
-      notifier = null
-      beaconManager = null
-      diag("stopped")
+      mainHandler.post {
+        try {
+          beaconManager?.let { mgr ->
+            notifier?.let { mgr.removeRangeNotifier(it) }
+            mgr.stopRangingBeacons(REGION)
+          }
+        } catch (_: Throwable) {}
+        notifier = null
+        beaconManager = null
+        diag("stopped")
+      }
     }
 
     OnDestroy {
-      try {
-        beaconManager?.let { mgr ->
-          notifier?.let { mgr.removeRangeNotifier(it) }
-          mgr.stopRangingBeacons(REGION)
-        }
-      } catch (_: Throwable) {}
-      notifier = null
-      beaconManager = null
+      mainHandler.post {
+        try {
+          beaconManager?.let { mgr ->
+            notifier?.let { mgr.removeRangeNotifier(it) }
+            mgr.stopRangingBeacons(REGION)
+          }
+        } catch (_: Throwable) {}
+        notifier = null
+        beaconManager = null
+      }
     }
   }
 
