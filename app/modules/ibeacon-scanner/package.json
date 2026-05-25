@@ -1,0 +1,7 @@
+{
+  "name": "ibeacon-scanner",
+  "version": "1.0.0",
+  "description": "Local Expo module pour scanner les iBeacons via ScanFilter Android natif",
+  "main": "index.ts",
+  "private": true
+}

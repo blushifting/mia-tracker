@@ -2,8 +2,9 @@ node_modules/
 .expo/
 dist/
 web-build/
-android/
-ios/
+# Prebuild output Android/iOS (regénérés par le CI)
+/android/
+/ios/
 *.log
 .DS_Store
 .env*

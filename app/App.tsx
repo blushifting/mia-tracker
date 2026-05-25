@@ -10,6 +10,7 @@ import {
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { BleManager, Device, ScanMode, State } from 'react-native-ble-plx';
 import * as Location from 'expo-location';
+import IBeaconScanner, { IBeaconEvent } from 'ibeacon-scanner';
 import { webviewHtml } from './webviewHtml';
 
 const APPLE_COMPANY_ID = [0x4c, 0x00]; // little-endian
@@ -169,6 +170,10 @@ export default function App() {
     hasRaw: 0,
     firstRawHex: '',
     rawIBeacon: 0,
+    nativeIBeacon: 0,
+    nativeMatched: 0,
+    nativeLastUuid: '',
+    nativeLastRssi: 0,
     beaconSeen: 0,
     beaconName: '',
     beaconRssi: 0,
@@ -183,7 +188,25 @@ export default function App() {
 
   useEffect(() => {
     bleManagerRef.current = new BleManager();
+    // Souscription au scanner natif iBeacon (module Kotlin local, contourne le
+    // filtrage Android qui drop les iBeacons quand on scanne sans ScanFilter
+    // sur manufacturer data).
+    const sub = IBeaconScanner.addListener('onIBeacon', (e: IBeaconEvent) => {
+      if (e.uuid === 'ERROR') {
+        postToWebview({ type: 'error', msg: 'Scan natif: code ' + e.major });
+        return;
+      }
+      statsRef.current.nativeIBeacon++;
+      statsRef.current.nativeLastUuid = e.uuid;
+      statsRef.current.nativeLastRssi = e.rssi;
+      const target = targetUuidRef.current;
+      if (target && e.uuid.toUpperCase() !== target.toUpperCase()) return;
+      statsRef.current.nativeMatched++;
+      postToWebview({ type: 'rssi', rssi: e.rssi, name: 'Mia (native)' });
+    });
     return () => {
+      try { sub.remove(); } catch {}
+      try { IBeaconScanner.stop(); } catch {}
       try { bleManagerRef.current?.stopDeviceScan(); } catch {}
       try { bleManagerRef.current?.destroy(); } catch {}
       locationSubRef.current?.remove();
@@ -252,9 +275,15 @@ export default function App() {
       total: 0, apple: 0, iBeacon: 0, matched: 0, appleSubtypes: '',
       sub02Seen: 0, sub02Hex: '',
       hasRaw: 0, firstRawHex: '', rawIBeacon: 0,
+      nativeIBeacon: 0, nativeMatched: 0, nativeLastUuid: '', nativeLastRssi: 0,
       beaconSeen: 0, beaconName: '', beaconRssi: 0, beaconMdLen: 0,
       beaconMd: '', beaconRaw: '', beaconServiceData: '',
     };
+
+    // Démarre le scanner natif iBeacon (filtre explicite manufacturer data)
+    try { IBeaconScanner.start(targetUuidRef.current); } catch (e: any) {
+      postToWebview({ type: 'error', msg: 'Scan natif start: ' + (e?.message || 'erreur') });
+    }
     appleSubtypeCountsRef.current = {};
     postToWebview({ type: 'scanState', scanning: true });
 
@@ -358,6 +387,7 @@ export default function App() {
   }
 
   function stopEverything() {
+    try { IBeaconScanner.stop(); } catch {}
     try { bleManagerRef.current?.stopDeviceScan(); } catch {}
     locationSubRef.current?.remove(); locationSubRef.current = null;
     headingSubRef.current?.remove(); headingSubRef.current = null;
