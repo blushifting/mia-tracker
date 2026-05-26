@@ -99,6 +99,16 @@ class IBeaconScannerModule : Module() {
             diag("foreground_service_err:${e.message}")
           }
 
+          // Pousse explicitement les beaconParsers + scan periods vers le
+          // ScanHelper interne. Sans ça, le ScanHelper reste sur sa copie
+          // figée (parsers count=0) et le RangeNotifier livre n=0 en boucle.
+          try {
+            mgr.applySettings()
+            diag("settings_applied parsers=${mgr.beaconParsers.size}")
+          } catch (e: Throwable) {
+            diag("apply_settings_err:${e.message}")
+          }
+
           notifier?.let { mgr.removeRangeNotifier(it) }
           rangeCount.set(0)
           beaconCount.set(0)

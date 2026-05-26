@@ -16,6 +16,13 @@ import { webviewHtml } from './webviewHtml';
 const APPLE_COMPANY_ID = [0x4c, 0x00]; // little-endian
 const IBEACON_TYPE = [0x02, 0x15];
 
+// Le scan ble-plx parallèle (BluetoothLeScanner natif Android brut) ne voit
+// JAMAIS les iBeacon sur Pixel 10 / Android 16 — confirmé après des dizaines
+// de tests avec tous les ScanFilter possibles. On le coupe pour éviter la
+// concurrence avec AltBeacon sur la file HCI. Passer à true pour ré-activer
+// les compteurs Apple sub-types si besoin de comparer.
+const ENABLE_BLE_PLX_SCAN = false;
+
 function base64ToBytes(b64: string): Uint8Array {
   const binary = globalThis.atob ? globalThis.atob(b64) : '';
   const len = binary.length;
@@ -308,6 +315,11 @@ export default function App() {
     }, 1500);
 
     const targetMac = targetMacRef.current.toUpperCase();
+
+    if (!ENABLE_BLE_PLX_SCAN) {
+      // Scan ble-plx désactivé : on s'appuie uniquement sur AltBeacon natif.
+      return;
+    }
 
     manager.startDeviceScan(
       null,
