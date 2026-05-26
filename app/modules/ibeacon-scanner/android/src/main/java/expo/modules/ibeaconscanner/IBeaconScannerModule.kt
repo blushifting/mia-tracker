@@ -113,7 +113,11 @@ class IBeaconScannerModule : Module() {
         .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
         .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
         .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
-        .setLegacy(true)
+        // Legacy=false : accepter BT4.x ET BLE5 extended advertising. Sans
+        // ca, les beacons qui broadcast en extended (format moderne, plus
+        // de payload) sont invisibles. nRF Connect scanne les deux par
+        // defaut, c'est pour ca qu'il voit le device.
+        .setLegacy(false)
         .setReportDelay(0L)
         .build()
 
@@ -142,7 +146,7 @@ class IBeaconScannerModule : Module() {
         s.startScan(emptyList(), settings, cb)
         scanner = s
         callback = cb
-        diag("scan_started mac=$mac mode=LOW_LATENCY filter=none (match cote code)")
+        diag("scan_started mac=$mac mode=LOW_LATENCY legacy=false filter=none")
       } catch (e: SecurityException) {
         diag("start_scan_security_err:${e.message} (BLUETOOTH_SCAN refuse ?)")
         return@Function
