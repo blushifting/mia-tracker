@@ -117,11 +117,6 @@ export const webviewHtml = `<!DOCTYPE html>
     <div class="dbg-row"><span><span class="dbg-key">mac ciblee</span>: <span id="dbg-mac">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">scans</span> <span id="dbg-nat">0</span> &middot; <span class="dbg-key">matched</span> <span id="dbg-natm">0</span> &middot; <span class="dbg-key">rssi</span> <span id="dbg-natr">—</span> dBm &middot; <span class="dbg-key">age</span> <span id="dbg-age">—</span>s</span></div>
     <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
-    <div class="dbg-row" style="border-top:1px solid var(--accent);padding-top:4px;margin-top:4px;display:flex;justify-content:space-between;">
-      <span><span class="dbg-key" style="color:var(--accent);">DISCOVERY</span> &middot; <span id="dbg-disc-uniq">0</span> macs vues</span>
-      <span style="font-size:.55rem;color:var(--muted);">vert=&lt;2s &middot; orange=&lt;6s &middot; rouge=&gt;6s</span>
-    </div>
-    <div id="dbg-mac-list" style="max-height:180px;overflow-y:auto;font-size:.6rem;font-family:'Share Tech Mono',monospace;line-height:1.35;"></div>
   </div>
   <div id="map"></div>
   <div id="rssi-bar">
@@ -482,19 +477,6 @@ export const webviewHtml = `<!DOCTYPE html>
                            document.getElementById('dbg-age').textContent = (msg.lastAgeSec != null && msg.lastAgeSec >= 0) ? msg.lastAgeSec : '—';
                            if (msg.nativeDiag) document.getElementById('dbg-natd').textContent = msg.nativeDiag;
                            break;
-        case 'macList':    { var list = msg.items || [], html = '', target = (msg.target || '').toUpperCase();
-                             document.getElementById('dbg-disc-uniq').textContent = msg.unique || 0;
-                             for (var i = 0; i < list.length; i++) {
-                               var it = list[i];
-                               var ageSec = Math.round((it.ageMs || 0) / 1000);
-                               var color = ageSec < 2 ? '#3fb950' : (ageSec < 6 ? '#d29922' : '#f85149');
-                               var isTarget = it.mac && it.mac.toUpperCase() === target;
-                               var bg = isTarget ? 'background:rgba(255,255,255,.08);' : '';
-                               var nameStr = it.name ? ' ' + it.name : '';
-                               html += '<div style="color:' + color + ';' + bg + 'padding:1px 2px;">' + it.mac + ' ' + (it.rssi !== undefined ? it.rssi + 'dBm' : '—') + ' ' + ageSec + 's #' + (it.count||0) + nameStr + '</div>';
-                             }
-                             document.getElementById('dbg-mac-list').innerHTML = html || '<div style="color:var(--muted)">en attente…</div>';
-                             break; }
         case 'status':     setStatus(msg.msg, msg.state || ''); break;
         case 'error':      setStatus(msg.msg, 'error'); snack(msg.msg); break;
         case 'snack':      snack(msg.msg); break;

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import * as Location from 'expo-location';
-import IBeaconScanner, { IBeaconEvent, DiagEvent, MacListEvent } from 'ibeacon-scanner';
+import IBeaconScanner, { IBeaconEvent, DiagEvent } from 'ibeacon-scanner';
 import { webviewHtml } from './webviewHtml';
 
 // MAC du collier de Mia (RDL810-B2). Cf. RECAP-IBEACON-DEBUG.md piste G.
@@ -71,14 +71,9 @@ export default function App() {
       // eslint-disable-next-line no-console
       console.log('[ibeacon-diag]', msg);
     });
-    const subM = IBeaconScanner.addListener('onMacList', (e: MacListEvent) => {
-      postToWebview({ type: 'macList', items: e.items, total: e.total, unique: e.unique, target: e.target });
-    });
-
     return () => {
       try { subI.remove(); } catch {}
       try { subD.remove(); } catch {}
-      try { subM.remove(); } catch {}
       try { IBeaconScanner.stop(); } catch {}
       locationSubRef.current?.remove();
       headingSubRef.current?.remove();

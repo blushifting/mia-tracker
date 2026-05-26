@@ -1,8 +1,9 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
 export interface IBeaconEvent {
-  // Champs hérités de l'ancienne API iBeacon. Avec le scan par MAC, uuid est
-  // vide et major/minor sont à 0 — seuls rssi/deviceId/txPower sont remplis.
+  // Champs hérités de l'API iBeacon. Avec le mode connexion active,
+  // uuid est vide, major/minor = 0 et txPower = 0. Seul rssi est rempli
+  // (RSSI de la connexion GATT, lu via readRemoteRssi).
   uuid: string;
   major: number;
   minor: number;
@@ -16,31 +17,15 @@ export interface DiagEvent {
   msg: string;
 }
 
-export interface MacListItem {
-  mac: string;
-  rssi: number;
-  ageMs: number;
-  count: number;
-  name: string;
-}
-
-export interface MacListEvent {
-  items: MacListItem[];
-  total: number;
-  unique: number;
-  target: string;
-}
-
 type IBeaconScannerEvents = {
   onIBeacon: (event: IBeaconEvent) => void;
   onDiag: (event: DiagEvent) => void;
-  onMacList: (event: MacListEvent) => void;
 };
 
 declare class IBeaconScannerType extends NativeModule<IBeaconScannerEvents> {
   ping(): string;
   /**
-   * Démarre un scan BLE filtré par adresse MAC.
+   * Se connecte au device par MAC et lit le RSSI en boucle.
    * @param targetMac MAC du device cible au format AA:BB:CC:DD:EE:FF
    */
   start(targetMac: string): void;
