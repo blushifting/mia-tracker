@@ -1,194 +1,219 @@
 package expo.modules.ibeaconscanner
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import org.altbeacon.beacon.Beacon
-import org.altbeacon.beacon.BeaconManager
-import org.altbeacon.beacon.BeaconParser
-import org.altbeacon.beacon.RangeNotifier
-import org.altbeacon.beacon.Region
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Module natif iBeacon basé sur AltBeacon (Android Beacon Library).
+ * Scan BLE direct par adresse MAC (piste G du debug iBeacon).
  *
- * Sur Android 8+, AltBeacon utilise par défaut le JobScheduler (scan par lots),
- * ce qui livre n=0 en foreground. On désactive le JobScheduler et on active le
- * foreground service scanning pour obtenir un scan continu avec une notification.
+ * Pourquoi : sur Pixel 10 / Android 16, les advertisements iBeacon (manufacturer
+ * data Apple sub-type 0x02) sont filtres au niveau firmware/HAL avant d'arriver
+ * au callback BluetoothLeScanner. Toutes les tentatives (ble-plx brut, ScanFilter
+ * Apple, AltBeacon 2.21) ont echoue. Le filtre par adresse MAC contourne ce filtre
+ * iBeacon-specifique : Android livre les advertisements du device cible quelle que
+ * soit la forme de leur payload manufacturer.
  *
- * Permissions requises (dans ce manifest) :
- *   FOREGROUND_SERVICE + FOREGROUND_SERVICE_CONNECTED_DEVICE (Android 14+)
+ * On expose le meme nom de module ("IBeaconScanner") et les memes events
+ * ("onIBeacon", "onDiag") pour minimiser le diff cote JS. Les champs uuid/major/
+ * minor restent dans le payload mais sont vides (l'UUID iBeacon n'est plus parse
+ * cote natif).
  *
- * Layout iBeacon : m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24
+ * Diagnostics defensifs integres :
+ *  - validation MAC (regex AA:BB:CC:DD:EE:FF)
+ *  - check BluetoothAdapter present + enabled
+ *  - capture onScanFailed avec le code d'erreur
+ *  - tick periodique (5s) : scans/matched/last_rssi/age
+ *  - warning si aucun advertisement recu apres le premier tick
  */
 class IBeaconScannerModule : Module() {
 
   companion object {
-    private const val IBEACON_LAYOUT =
-      "m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"
-    private val REGION = Region("mia-tracker-region", null, null, null)
-    private const val NOTIF_ID = 456
-    private const val CHANNEL_ID = "mia-beacon-scan"
+    private val MAC_REGEX = Regex("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+    private const val TICK_PERIOD_MS = 5000L
   }
 
-  private var beaconManager: BeaconManager? = null
-  private var notifier: RangeNotifier? = null
-  private var targetUuid: String? = null
-  private val rangeCount = AtomicInteger(0)
-  private val beaconCount = AtomicInteger(0)
+  private var scanner: BluetoothLeScanner? = null
+  private var callback: ScanCallback? = null
   private val mainHandler = Handler(Looper.getMainLooper())
+  private val scansSeen = AtomicInteger(0)
+  private val matchedScans = AtomicInteger(0)
+  private val lastSeenMs = AtomicLong(0L)
+  @Volatile private var lastRssi = 0
+  @Volatile private var lastName = ""
+  @Volatile private var targetMac: String = ""
+  private var tickRunnable: Runnable? = null
 
   override fun definition() = ModuleDefinition {
     Name("IBeaconScanner")
 
     Events("onIBeacon", "onDiag")
 
-    Function("ping") { -> "pong-altbeacon-v2" }
+    Function("ping") { -> "pong-macscan-v1" }
 
-    Function("start") { uuid: String? ->
-      targetUuid = uuid?.uppercase()
-      diag("start_called uuid=$targetUuid (AltBeacon v2)")
+    Function("start") { macParam: String? ->
+      val mac = (macParam ?: "").uppercase().trim()
+      diag("start_called mac=$mac")
+
+      if (!MAC_REGEX.matches(mac)) {
+        diag("bad_mac '$mac' attendu AA:BB:CC:DD:EE:FF")
+        return@Function
+      }
 
       val ctx: Context = appContext.reactContext ?: run {
         diag("no_react_context")
         return@Function
       }
 
-      // Tout le setup AltBeacon DOIT tourner sur le main thread (LiveData
-      // observeForever exige le main thread).
-      mainHandler.post {
-        try {
-          val appCtx = ctx.applicationContext
-          val mgr = BeaconManager.getInstanceForApplication(appCtx)
-          mgr.beaconParsers.clear()
-          mgr.beaconParsers.add(BeaconParser().setBeaconLayout(IBEACON_LAYOUT))
+      val btMgr = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+      val adapter = btMgr?.adapter
+      if (adapter == null) {
+        diag("no_bluetooth_adapter")
+        return@Function
+      }
+      if (!adapter.isEnabled) {
+        diag("bt_disabled active le Bluetooth")
+        return@Function
+      }
 
-          // Désactive le JobScheduler (mode batch Android 8+) — utilise à la
-          // place le foreground service pour un scan continu sans pauses.
-          mgr.setEnableScheduledScanJobs(false)
-          mgr.foregroundScanPeriod = 1100L
-          mgr.foregroundBetweenScanPeriod = 0L
+      val s = adapter.bluetoothLeScanner
+      if (s == null) {
+        diag("no_le_scanner adapter pas pret")
+        return@Function
+      }
 
-          // Canal notification (obligatoire Android 8+)
-          val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-          if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            val channel = NotificationChannel(
-              CHANNEL_ID,
-              "Scan beacon Mia",
-              NotificationManager.IMPORTANCE_LOW
-            )
-            nm.createNotificationChannel(channel)
+      stopInternal()
+
+      targetMac = mac
+      scansSeen.set(0)
+      matchedScans.set(0)
+      lastSeenMs.set(0L)
+      lastRssi = 0
+      lastName = ""
+
+      val filter = ScanFilter.Builder()
+        .setDeviceAddress(mac)
+        .build()
+
+      val settings = ScanSettings.Builder()
+        .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+        .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+        .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+        .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+        .setLegacy(true)
+        .setReportDelay(0L)
+        .build()
+
+      val cb = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+          handleResult(result)
+        }
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+          for (r in results) handleResult(r)
+        }
+        override fun onScanFailed(errorCode: Int) {
+          val label = when (errorCode) {
+            SCAN_FAILED_ALREADY_STARTED -> "ALREADY_STARTED"
+            SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "APP_REG_FAILED"
+            SCAN_FAILED_FEATURE_UNSUPPORTED -> "FEATURE_UNSUPPORTED"
+            SCAN_FAILED_INTERNAL_ERROR -> "INTERNAL_ERROR"
+            5 -> "OUT_OF_HW_RESOURCES"
+            6 -> "SCANNING_TOO_FREQUENTLY"
+            else -> "UNKNOWN"
           }
-
-          val notif = Notification.Builder(appCtx, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Mia Tracker")
-            .setContentText("Recherche du beacon de Mia...")
-            .build()
-
-          try {
-            mgr.enableForegroundServiceScanning(notif, NOTIF_ID)
-            diag("foreground_service_enabled")
-          } catch (e: Throwable) {
-            diag("foreground_service_err:${e.message}")
-          }
-
-          // Pousse explicitement les beaconParsers + scan periods vers le
-          // ScanHelper interne. Sans ça, le ScanHelper reste sur sa copie
-          // figée (parsers count=0) et le RangeNotifier livre n=0 en boucle.
-          try {
-            mgr.applySettings()
-            diag("settings_applied parsers=${mgr.beaconParsers.size}")
-          } catch (e: Throwable) {
-            diag("apply_settings_err:${e.message}")
-          }
-
-          notifier?.let { mgr.removeRangeNotifier(it) }
-          rangeCount.set(0)
-          beaconCount.set(0)
-
-          val n = RangeNotifier { beacons: Collection<Beacon>, _: Region ->
-            rangeCount.incrementAndGet()
-            beaconCount.addAndGet(beacons.size)
-            diag("range n=${beacons.size} total=${beaconCount.get()}")
-            for (b in beacons) {
-              val uuid2 = b.id1?.toString()?.uppercase() ?: continue
-              val major = try { b.id2.toInt() } catch (_: Throwable) { 0 }
-              val minor = try { b.id3.toInt() } catch (_: Throwable) { 0 }
-              val tx = b.txPower
-              val rssi = b.rssi
-              val tgt = targetUuid
-              val match = tgt.isNullOrEmpty() || uuid2 == tgt
-              sendEvent(
-                "onIBeacon",
-                mapOf(
-                  "uuid" to uuid2,
-                  "major" to major,
-                  "minor" to minor,
-                  "txPower" to tx,
-                  "rssi" to rssi,
-                  "deviceId" to (b.bluetoothAddress ?: ""),
-                  "match" to match
-                )
-              )
-            }
-          }
-          notifier = n
-          mgr.addRangeNotifier(n)
-
-          try {
-            mgr.startRangingBeacons(REGION)
-            diag("ranging_started_ok (foreground service)")
-          } catch (e: Throwable) {
-            diag("start_ranging_threw:${e.message}")
-          }
-
-          beaconManager = mgr
-        } catch (e: Throwable) {
-          diag("init_threw:${e.message}")
+          diag("scan_failed code=$errorCode ($label)")
         }
       }
+
+      try {
+        s.startScan(listOf(filter), settings, cb)
+        scanner = s
+        callback = cb
+        diag("scan_started mac=$mac mode=LOW_LATENCY filter=address")
+      } catch (e: SecurityException) {
+        diag("start_scan_security_err:${e.message} (BLUETOOTH_SCAN refuse ?)")
+        return@Function
+      } catch (e: Throwable) {
+        diag("start_scan_threw:${e.javaClass.simpleName}:${e.message}")
+        return@Function
+      }
+
+      val tick = object : Runnable {
+        override fun run() {
+          val n = scansSeen.get()
+          val m = matchedScans.get()
+          val lastMs = lastSeenMs.get()
+          val ageMs = if (lastMs == 0L) -1L else System.currentTimeMillis() - lastMs
+          diag("tick scans=$n matched=$m rssi=${lastRssi}dBm age=${ageMs}ms")
+          if (n == 0) {
+            diag("warn no_adv_recu beacon eteint/hors_portee/mac_changee ?")
+          }
+          mainHandler.postDelayed(this, TICK_PERIOD_MS)
+        }
+      }
+      tickRunnable = tick
+      mainHandler.postDelayed(tick, TICK_PERIOD_MS)
     }
 
     Function("stop") {
-      mainHandler.post {
-        try {
-          beaconManager?.let { mgr ->
-            notifier?.let { mgr.removeRangeNotifier(it) }
-            mgr.stopRangingBeacons(REGION)
-            try { mgr.disableForegroundServiceScanning() } catch (_: Throwable) {}
-          }
-        } catch (_: Throwable) {}
-        notifier = null
-        beaconManager = null
-        diag("stopped")
-      }
+      stopInternal()
+      diag("stopped")
     }
 
     OnDestroy {
-      mainHandler.post {
-        try {
-          beaconManager?.let { mgr ->
-            notifier?.let { mgr.removeRangeNotifier(it) }
-            mgr.stopRangingBeacons(REGION)
-            try { mgr.disableForegroundServiceScanning() } catch (_: Throwable) {}
-          }
-        } catch (_: Throwable) {}
-        notifier = null
-        beaconManager = null
-      }
+      stopInternal()
     }
   }
 
-  private fun diag(msg: String) {
+  private fun handleResult(result: ScanResult) {
+    val n = scansSeen.incrementAndGet()
+    matchedScans.incrementAndGet()
+    lastSeenMs.set(System.currentTimeMillis())
+    lastRssi = result.rssi
+    val devName = try { result.device?.name } catch (_: SecurityException) { null }
+    val name = devName ?: result.scanRecord?.deviceName ?: ""
+    if (name.isNotEmpty()) lastName = name
+    val tx = try { result.txPower } catch (_: Throwable) { 0 }
+
+    sendEvent(
+      "onIBeacon",
+      mapOf(
+        "uuid" to "",
+        "major" to 0,
+        "minor" to 0,
+        "txPower" to tx,
+        "rssi" to result.rssi,
+        "deviceId" to (try { result.device?.address ?: targetMac } catch (_: SecurityException) { targetMac }),
+        "match" to true
+      )
+    )
+
+    if (n == 1) {
+      diag("first_match rssi=${result.rssi}dBm name='$lastName' tx=$tx")
+    }
+  }
+
+  private fun stopInternal() {
     try {
-      sendEvent("onDiag", mapOf("msg" to msg))
+      callback?.let { scanner?.stopScan(it) }
     } catch (_: Throwable) {}
+    callback = null
+    scanner = null
+    tickRunnable?.let { mainHandler.removeCallbacks(it) }
+    tickRunnable = null
+  }
+
+  private fun diag(msg: String) {
+    try { sendEvent("onDiag", mapOf("msg" to msg)) } catch (_: Throwable) {}
   }
 }

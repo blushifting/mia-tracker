@@ -113,20 +113,10 @@ export const webviewHtml = `<!DOCTYPE html>
     <h1 id="header-title">\u{1F431} Mia</h1>
   </div>
   <div id="debug-bar">
-    <div class="dbg-row"><span><span class="dbg-key">devices</span> <span id="dbg-total">0</span></span><span><span class="dbg-key">apple</span> <span id="dbg-apple">0</span></span><span><span class="dbg-key">iBeacon</span> <span id="dbg-ib">0</span></span><span><span class="dbg-key">match</span> <span id="dbg-match">0</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">apple sub-types</span>: <span id="dbg-sub">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">sous-type 0x02 (iBeacon)</span>: <span id="dbg-s02">0</span> packets</span></div>
-    <div class="dbg-row"><span><span class="dbg-key">premier hex 0x02</span>: <span id="dbg-s02h" class="dbg-hex">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">rawScanRecord disponible</span>: <span id="dbg-raw">0</span> fois &middot; iBeacon via raw: <span id="dbg-rib">0</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">premier raw</span>: <span id="dbg-frh" class="dbg-hex">—</span></span></div>
-    <div class="dbg-row" style="border-top:1px solid var(--accent);padding-top:4px;margin-top:4px;"><span><span class="dbg-key" style="color:var(--accent);">SCAN NATIF iBeacon</span>: <span id="dbg-nat">0</span> packets &middot; match: <span id="dbg-natm">0</span> &middot; rssi <span id="dbg-natr">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">UUID natif</span>: <span id="dbg-natu">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">ping natif</span>: <span id="dbg-natp">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">mac ciblee</span>: <span id="dbg-mac">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">scans</span> <span id="dbg-nat">0</span> &middot; <span class="dbg-key">matched</span> <span id="dbg-natm">0</span> &middot; <span class="dbg-key">rssi</span> <span id="dbg-natr">—</span> dBm &middot; <span class="dbg-key">age</span> <span id="dbg-age">—</span>s</span></div>
     <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">beacon MAC vu</span>: <span id="dbg-bvu">0</span> fois &middot; RSSI <span id="dbg-brssi">—</span> dBm &middot; <span id="dbg-bname">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">md (<span id="dbg-bmdlen">0</span>o)</span>: <span id="dbg-bmd" class="dbg-hex">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">raw scan</span>: <span id="dbg-braw" class="dbg-hex">—</span></span></div>
-    <div class="dbg-row"><span><span class="dbg-key">srv data</span>: <span id="dbg-bsd" class="dbg-hex">—</span></span></div>
   </div>
   <div id="map"></div>
   <div id="rssi-bar">
@@ -477,31 +467,15 @@ export const webviewHtml = `<!DOCTYPE html>
         case 'scanState':  scanning = msg.scanning; updateScanBtn();
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arr\xEAt\xE9', msg.scanning ? 'active' : '');
                            document.getElementById('debug-bar').classList.toggle('show', !!msg.scanning);
-                           if (msg.scanning) { ['dbg-total','dbg-apple','dbg-ib','dbg-match'].forEach(function(id){document.getElementById(id).textContent='0';}); document.getElementById('dbg-uuid').textContent='—'; document.getElementById('dbg-hex').textContent='—'; }
+                           if (msg.scanning) { ['dbg-nat','dbg-natm'].forEach(function(id){document.getElementById(id).textContent='0';}); document.getElementById('dbg-natr').textContent='—'; document.getElementById('dbg-age').textContent='—'; }
                            break;
-        case 'debug':      document.getElementById('dbg-total').textContent = msg.total;
-                           document.getElementById('dbg-apple').textContent = msg.apple;
-                           document.getElementById('dbg-ib').textContent = msg.iBeacon;
-                           document.getElementById('dbg-match').textContent = msg.matched;
-                           document.getElementById('dbg-sub').textContent = msg.appleSubtypes || '—';
-                           document.getElementById('dbg-s02').textContent = msg.sub02Seen || 0;
-                           if (msg.sub02Hex) document.getElementById('dbg-s02h').textContent = msg.sub02Hex;
-                           document.getElementById('dbg-raw').textContent = msg.hasRaw || 0;
-                           document.getElementById('dbg-rib').textContent = msg.rawIBeacon || 0;
-                           if (msg.firstRawHex) document.getElementById('dbg-frh').textContent = msg.firstRawHex;
-                           document.getElementById('dbg-nat').textContent = msg.nativeIBeacon || 0;
-                           document.getElementById('dbg-natm').textContent = msg.nativeMatched || 0;
-                           document.getElementById('dbg-natr').textContent = msg.nativeLastRssi || '—';
-                           if (msg.nativeLastUuid) document.getElementById('dbg-natu').textContent = msg.nativeLastUuid;
-                           if (msg.nativePing) document.getElementById('dbg-natp').textContent = msg.nativePing;
+        case 'debug':      if (msg.nativePing) document.getElementById('dbg-natp').textContent = msg.nativePing;
+                           if (msg.mac) document.getElementById('dbg-mac').textContent = msg.mac;
+                           document.getElementById('dbg-nat').textContent = msg.scans || 0;
+                           document.getElementById('dbg-natm').textContent = msg.matched || 0;
+                           document.getElementById('dbg-natr').textContent = msg.lastRssi || '—';
+                           document.getElementById('dbg-age').textContent = (msg.lastAgeSec != null && msg.lastAgeSec >= 0) ? msg.lastAgeSec : '—';
                            if (msg.nativeDiag) document.getElementById('dbg-natd').textContent = msg.nativeDiag;
-                           document.getElementById('dbg-bvu').textContent = msg.beaconSeen || 0;
-                           document.getElementById('dbg-brssi').textContent = msg.beaconRssi || '—';
-                           document.getElementById('dbg-bname').textContent = msg.beaconName || '—';
-                           document.getElementById('dbg-bmdlen').textContent = msg.beaconMdLen || 0;
-                           document.getElementById('dbg-bmd').textContent = msg.beaconMd || '—';
-                           document.getElementById('dbg-braw').textContent = msg.beaconRaw || '—';
-                           document.getElementById('dbg-bsd').textContent = msg.beaconServiceData || '—';
                            break;
         case 'status':     setStatus(msg.msg, msg.state || ''); break;
         case 'error':      setStatus(msg.msg, 'error'); snack(msg.msg); break;

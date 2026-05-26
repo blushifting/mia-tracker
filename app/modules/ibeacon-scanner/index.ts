@@ -1,6 +1,8 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
 export interface IBeaconEvent {
+  // Champs hérités de l'ancienne API iBeacon. Avec le scan par MAC, uuid est
+  // vide et major/minor sont à 0 — seuls rssi/deviceId/txPower sont remplis.
   uuid: string;
   major: number;
   minor: number;
@@ -21,7 +23,11 @@ type IBeaconScannerEvents = {
 
 declare class IBeaconScannerType extends NativeModule<IBeaconScannerEvents> {
   ping(): string;
-  start(targetUuid: string | null): void;
+  /**
+   * Démarre un scan BLE filtré par adresse MAC.
+   * @param targetMac MAC du device cible au format AA:BB:CC:DD:EE:FF
+   */
+  start(targetMac: string): void;
   stop(): void;
 }
 
