@@ -16,9 +16,25 @@ export interface DiagEvent {
   msg: string;
 }
 
+export interface MacListItem {
+  mac: string;
+  rssi: number;
+  ageMs: number;
+  count: number;
+  name: string;
+}
+
+export interface MacListEvent {
+  items: MacListItem[];
+  total: number;
+  unique: number;
+  target: string;
+}
+
 type IBeaconScannerEvents = {
   onIBeacon: (event: IBeaconEvent) => void;
   onDiag: (event: DiagEvent) => void;
+  onMacList: (event: MacListEvent) => void;
 };
 
 declare class IBeaconScannerType extends NativeModule<IBeaconScannerEvents> {

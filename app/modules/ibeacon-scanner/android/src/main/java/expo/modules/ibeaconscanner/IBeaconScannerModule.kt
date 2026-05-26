@@ -40,7 +40,19 @@ class IBeaconScannerModule : Module() {
 
   companion object {
     private val MAC_REGEX = Regex("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
-    private const val TICK_PERIOD_MS = 5000L
+    private const val DIAG_TICK_MS = 5000L
+    private const val MAC_LIST_TICK_MS = 1000L
+    private const val MAC_LIST_MAX = 25
+  }
+
+  // Entree par MAC : derniere mesure observee pour cette adresse pendant
+  // la session de scan. Champs @Volatile pour visibilite cross-thread sans
+  // synchronisation lourde (la precision exacte du count n'est pas critique).
+  private class MacEntry {
+    @Volatile var rssi: Int = 0
+    @Volatile var lastMs: Long = 0L
+    @Volatile var count: Int = 0
+    @Volatile var name: String = ""
   }
 
   private var scanner: BluetoothLeScanner? = null
@@ -52,15 +64,16 @@ class IBeaconScannerModule : Module() {
   @Volatile private var lastRssi = 0
   @Volatile private var lastName = ""
   @Volatile private var targetMac: String = ""
-  // Compteur par MAC vue pendant le scan, pour debug top-N quand on ne
-  // matche pas la MAC cible (cas MAC random / privacy-friendly beacon).
-  private val macCounts = ConcurrentHashMap<String, AtomicInteger>()
-  private var tickRunnable: Runnable? = null
+  // Mode discovery : on garde la derniere donnee par MAC pour pousser une
+  // liste live cote UI et identifier visuellement le beacon par on/off.
+  private val macEntries = ConcurrentHashMap<String, MacEntry>()
+  private var diagTickRunnable: Runnable? = null
+  private var macListTickRunnable: Runnable? = null
 
   override fun definition() = ModuleDefinition {
     Name("IBeaconScanner")
 
-    Events("onIBeacon", "onDiag")
+    Events("onIBeacon", "onDiag", "onMacList")
 
     Function("ping") { -> "pong-macscan-v1" }
 
@@ -103,7 +116,7 @@ class IBeaconScannerModule : Module() {
       lastSeenMs.set(0L)
       lastRssi = 0
       lastName = ""
-      macCounts.clear()
+      macEntries.clear()
 
       // Pas de ScanFilter : ScanFilter.setDeviceAddress() filtre par defaut
       // sur ADDRESS_TYPE_PUBLIC et rate les adresses random (RPA). On scanne
@@ -155,32 +168,53 @@ class IBeaconScannerModule : Module() {
         return@Function
       }
 
-      val tick = object : Runnable {
+      val diagTick = object : Runnable {
         override fun run() {
           val n = totalScans.get()
           val m = matchedScans.get()
-          val unique = macCounts.size
+          val unique = macEntries.size
           val lastMs = lastSeenMs.get()
           val ageMs = if (lastMs == 0L) -1L else System.currentTimeMillis() - lastMs
           diag("tick total=$n matched=$m unique_macs=$unique rssi=${lastRssi}dBm age=${ageMs}ms")
-          when {
-            n == 0 -> diag("warn aucun_advertisement_recu BT off ? scanner bloque ?")
-            m == 0 -> {
-              // Top 5 MACs vues pour identifier si notre beacon broadcast
-              // avec une MAC differente de celle qu'on attendait.
-              val top = macCounts.entries
-                .map { it.key to it.value.get() }
-                .sortedByDescending { it.second }
-                .take(5)
-                .joinToString(" ") { "${it.first}=${it.second}" }
-              diag("warn target_mac_pas_vu cible=$targetMac top5: $top")
-            }
+          if (n == 0) {
+            diag("warn aucun_advertisement_recu BT off ? scanner bloque ?")
           }
-          mainHandler.postDelayed(this, TICK_PERIOD_MS)
+          mainHandler.postDelayed(this, DIAG_TICK_MS)
         }
       }
-      tickRunnable = tick
-      mainHandler.postDelayed(tick, TICK_PERIOD_MS)
+      diagTickRunnable = diagTick
+      mainHandler.postDelayed(diagTick, DIAG_TICK_MS)
+
+      val macListTick = object : Runnable {
+        override fun run() {
+          val now = System.currentTimeMillis()
+          // Snapshot trie par fraicheur (plus recent en tete), limite a
+          // MAC_LIST_MAX entrees pour rester lisible cote UI.
+          val items = macEntries.entries
+            .map { (mac, e) ->
+              mapOf(
+                "mac" to mac,
+                "rssi" to e.rssi,
+                "ageMs" to (now - e.lastMs),
+                "count" to e.count,
+                "name" to e.name,
+              )
+            }
+            .sortedBy { it["ageMs"] as Long }
+            .take(MAC_LIST_MAX)
+          try {
+            sendEvent("onMacList", mapOf(
+              "items" to items,
+              "total" to totalScans.get(),
+              "unique" to macEntries.size,
+              "target" to targetMac,
+            ))
+          } catch (_: Throwable) {}
+          mainHandler.postDelayed(this, MAC_LIST_TICK_MS)
+        }
+      }
+      macListTickRunnable = macListTick
+      mainHandler.postDelayed(macListTick, MAC_LIST_TICK_MS)
     }
 
     Function("stop") {
@@ -195,19 +229,25 @@ class IBeaconScannerModule : Module() {
 
   private fun handleResult(result: ScanResult) {
     totalScans.incrementAndGet()
+    val now = System.currentTimeMillis()
     val deviceAddr = try { result.device?.address ?: "" } catch (_: SecurityException) { "" }
     val addrUp = deviceAddr.uppercase()
+    val devName = try { result.device?.name } catch (_: SecurityException) { null }
+    val name = devName ?: result.scanRecord?.deviceName ?: ""
+
     if (addrUp.isNotEmpty()) {
-      macCounts.computeIfAbsent(addrUp) { AtomicInteger(0) }.incrementAndGet()
+      val entry = macEntries.computeIfAbsent(addrUp) { MacEntry() }
+      entry.rssi = result.rssi
+      entry.lastMs = now
+      entry.count++
+      if (name.isNotEmpty()) entry.name = name
     }
 
     if (addrUp != targetMac) return
 
     val m = matchedScans.incrementAndGet()
-    lastSeenMs.set(System.currentTimeMillis())
+    lastSeenMs.set(now)
     lastRssi = result.rssi
-    val devName = try { result.device?.name } catch (_: SecurityException) { null }
-    val name = devName ?: result.scanRecord?.deviceName ?: ""
     if (name.isNotEmpty()) lastName = name
     val tx = try { result.txPower } catch (_: Throwable) { 0 }
 
@@ -235,8 +275,10 @@ class IBeaconScannerModule : Module() {
     } catch (_: Throwable) {}
     callback = null
     scanner = null
-    tickRunnable?.let { mainHandler.removeCallbacks(it) }
-    tickRunnable = null
+    diagTickRunnable?.let { mainHandler.removeCallbacks(it) }
+    diagTickRunnable = null
+    macListTickRunnable?.let { mainHandler.removeCallbacks(it) }
+    macListTickRunnable = null
   }
 
   private fun diag(msg: String) {
