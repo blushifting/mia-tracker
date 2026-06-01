@@ -14,6 +14,7 @@ export const webviewHtml = `<!DOCTYPE html>
     --bg:#0d1117; --surface:#161b22; --border:#30363d;
     --accent:#39d353; --warn:#f0b429; --danger:#f85149;
     --text:#e6edf3; --muted:#8b949e; --radius:4px; --beacon:#58a6ff;
+    --hot:#f85149; --cold:#58a6ff; --neutral:#8b949e;
   }
   *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
   html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Oxanium',sans-serif;overflow:hidden;}
@@ -26,6 +27,10 @@ export const webviewHtml = `<!DOCTYPE html>
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(57,211,83,.5);}70%{box-shadow:0 0 0 8px rgba(57,211,83,0);}100%{box-shadow:0 0 0 0 rgba(57,211,83,0);}}
   #status-text{font-family:'Share Tech Mono',monospace;font-size:.72rem;color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #map{flex:1;min-height:0;} .leaflet-container{background:#1c2128;}
+  #hotcold{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
+  #hc-arrow{font-size:1.6rem;line-height:1;width:30px;text-align:center;color:var(--neutral);transition:color .3s, transform .3s;}
+  #hc-text{flex:1;font-size:.95rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--neutral);transition:color .3s;}
+  #hc-slope{font-family:'Share Tech Mono',monospace;font-size:.75rem;color:var(--muted);min-width:64px;text-align:right;}
   #rssi-bar{display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
   #rssi-label{font-family:'Share Tech Mono',monospace;font-size:.75rem;color:var(--muted);min-width:80px;}
   #rssi-track{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;}
@@ -58,6 +63,12 @@ export const webviewHtml = `<!DOCTYPE html>
   .field input{background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'Share Tech Mono',monospace;font-size:.88rem;padding:10px 12px;border-radius:var(--radius);outline:none;width:100%;}
   .field input:focus{border-color:var(--accent);}
   .field .hint{font-size:.7rem;color:var(--muted);line-height:1.4;}
+  .field.row-field{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;}
+  .field.row-field label{margin:0;}
+  .switch{position:relative;width:44px;height:24px;background:var(--border);border-radius:12px;cursor:pointer;transition:background .2s;flex-shrink:0;}
+  .switch.on{background:var(--accent);}
+  .switch::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:transform .2s;}
+  .switch.on::after{transform:translateX(20px);}
   .config-actions{display:flex;gap:8px;margin-top:4px;}
   #snack{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--surface);border:1px solid var(--border);padding:10px 18px;border-radius:20px;font-size:.8rem;color:var(--text);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;white-space:nowrap;z-index:999;}
   #snack.show{opacity:1;transform:translateX(-50%) translateY(0);}
@@ -92,13 +103,12 @@ export const webviewHtml = `<!DOCTYPE html>
     <div class="hint">2.0 = espace libre, 2.5 = jardin (recommand\xE9), 3–4 = int\xE9rieur dense.</div>
   </div>
   <div class="field">
-    <label>Lissage RSSI (fen\xEAtre)</label>
-    <input id="cfg-smooth" type="number" value="5" min="1" max="20">
-    <div class="hint">Nombre de mesures \xE0 moyenner.</div>
-  </div>
-  <div class="field">
     <label>Nom affich\xE9 du beacon</label>
     <input id="cfg-name" type="text" value="Mia">
+  </div>
+  <div class="field row-field">
+    <label>Afficher la barre de debug</label>
+    <div id="cfg-debug-switch" class="switch" onclick="toggleDebug()"></div>
   </div>
   <div class="config-actions">
     <button class="btn primary" onclick="saveConfig()">✓ Enregistrer</button>
@@ -116,9 +126,15 @@ export const webviewHtml = `<!DOCTYPE html>
     <div class="dbg-row"><span><span class="dbg-key">ping natif</span>: <span id="dbg-natp">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">mac ciblee</span>: <span id="dbg-mac">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">scans</span> <span id="dbg-nat">0</span> &middot; <span class="dbg-key">matched</span> <span id="dbg-natm">0</span> &middot; <span class="dbg-key">rssi</span> <span id="dbg-natr">—</span> dBm &middot; <span class="dbg-key">age</span> <span id="dbg-age">—</span>s</span></div>
+    <div class="dbg-row"><span><span class="dbg-key">gps acc</span> <span id="dbg-gpsacc">—</span> m &middot; <span class="dbg-key">baseline</span> <span id="dbg-bsl">—</span> m / <span id="dbg-ang">—</span>\xB0 &middot; <span class="dbg-key">rms</span> <span id="dbg-rms">—</span> m</span></div>
     <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
   </div>
   <div id="map"></div>
+  <div id="hotcold">
+    <div id="hc-arrow">—</div>
+    <div id="hc-text">En attente du signal…</div>
+    <div id="hc-slope">— dBm/s</div>
+  </div>
   <div id="rssi-bar">
     <div id="rssi-label">RSSI</div>
     <div id="rssi-track"><div id="rssi-fill"></div></div>
@@ -150,12 +166,26 @@ export const webviewHtml = `<!DOCTYPE html>
   // ===== Config =====
   var cfg = {
     uuid: 'FDA50693-A4E2-4FB1-AFCF-C6EB07647825',
-    txPower: -40, n: 2.5, smooth: 5, name: 'Mia'
+    txPower: -40, n: 2.5, name: 'Mia',
+    showDebug: false
   };
   try {
     var saved = localStorage.getItem('miatracker_cfg');
     if (saved) cfg = Object.assign(cfg, JSON.parse(saved));
   } catch(e) {}
+
+  // ===== Tuning constants =====
+  // RSSI vu en pratique : 10 dBm de variance statique observ\xE9e.
+  // Kalman 1D : variance mesure ~25 (sigma=5), variance process ~0.5.
+  var K_R = 25.0;           // measurement noise variance
+  var K_Q = 0.5;            // process noise variance
+  var RSSI_JUMP_DBM = 15;   // saut max accept\xE9 entre 2 samples cons\xE9cutifs (sinon outlier)
+  var HOT_COLD_WINDOW_MS = 8000;  // fen\xEAtre pour la pente RSSI
+  var HOT_COLD_HYST_DBM = 4;       // hyst\xE9r\xE9sis : sous ce delta, on dit "stable"
+  var GPS_ACC_MAX_M = 25;          // au-del\xE0, pond\xE9ration GPS quasi-nulle
+  var MIN_BASELINE_M = 5;          // spread spatial minimum pour publier une position triangul\xE9e
+  var MIN_ANGLE_DEG = 60;          // angle de vue minimum depuis le centro\xEFde
+  var MEASURE_WINDOW_MS = 30000;   // fen\xEAtre temporelle des mesures retenues
 
   function postRN(msg) {
     if (window.ReactNativeWebView) {
@@ -167,10 +197,23 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-uuid').value = cfg.uuid;
     document.getElementById('cfg-txpower').value = cfg.txPower;
     document.getElementById('cfg-n').value = cfg.n;
-    document.getElementById('cfg-smooth').value = cfg.smooth;
     document.getElementById('cfg-name').value = cfg.name;
     document.getElementById('header-title').textContent = '\u{1F431} ' + cfg.name;
+    document.getElementById('cfg-debug-switch').classList.toggle('on', !!cfg.showDebug);
+    applyDebugVisibility();
   }
+
+  function applyDebugVisibility() {
+    // La debug bar n'apparait que si l'option est activ\xE9e ET qu'un scan est en cours.
+    var show = !!cfg.showDebug && scanning;
+    document.getElementById('debug-bar').classList.toggle('show', show);
+  }
+
+  window.toggleDebug = function() {
+    cfg.showDebug = !cfg.showDebug;
+    document.getElementById('cfg-debug-switch').classList.toggle('on', cfg.showDebug);
+    applyDebugVisibility();
+  };
 
   window.openConfig = function() { document.getElementById('config-panel').classList.add('open'); };
   window.closeConfig = function() { document.getElementById('config-panel').classList.remove('open'); };
@@ -178,8 +221,8 @@ export const webviewHtml = `<!DOCTYPE html>
     cfg.uuid    = (document.getElementById('cfg-uuid').value || '').trim().toUpperCase();
     cfg.txPower = parseFloat(document.getElementById('cfg-txpower').value) || -40;
     cfg.n       = parseFloat(document.getElementById('cfg-n').value) || 2.5;
-    cfg.smooth  = parseInt(document.getElementById('cfg-smooth').value) || 5;
     cfg.name    = (document.getElementById('cfg-name').value || '').trim() || 'Mia';
+    // showDebug est d\xE9j\xE0 \xE0 jour via toggleDebug()
     localStorage.setItem('miatracker_cfg', JSON.stringify(cfg));
     document.getElementById('header-title').textContent = '\u{1F431} ' + cfg.name;
     postRN({ type: 'config', uuid: cfg.uuid });
@@ -196,6 +239,8 @@ export const webviewHtml = `<!DOCTYPE html>
   var markerMe = null, markerBeacon = null;
   var measureLayer = L.layerGroup().addTo(map);
   var lineLayer = L.layerGroup().addTo(map);
+  var uncertaintyCircle = null;
+  var areaCircle = null; // cercle "quelque part dans X m" quand baseline insuffisante
 
   function makeIcon(cls) {
     return L.divIcon({ className:'', html: '<div class="'+cls+'"></div>', iconSize:[14,14], iconAnchor:[7,7] });
@@ -203,15 +248,40 @@ export const webviewHtml = `<!DOCTYPE html>
 
   // ===== State =====
   var scanning = false;
-  var myPos = null;
-  var measures = [];
-  var rssiWindow = [];
+  var myPos = null;          // { lat, lng, acc }
+  var measures = [];          // { lat, lng, acc, rssi, dist, t }
+  var rssiHistory = [];       // { t, rssi (smoothed) } pour la pente chaud/froid
   var beaconPos = null;
   var lastBearing = null;
   var deviceHeading = 0;
   var mapAutoCentered = false;
 
-  // ===== Distance / triangulation =====
+  // Kalman 1D state
+  var kf = { initialized: false, x: 0, p: 1.0 };
+  var lastRawRssi = null;
+  var lastRawRssiTime = 0;
+
+  function kalmanUpdate(z) {
+    if (!kf.initialized) {
+      kf.x = z; kf.p = K_R;
+      kf.initialized = true;
+      return kf.x;
+    }
+    // predict (random walk : x_pred = x, P_pred = P + Q)
+    kf.p = kf.p + K_Q;
+    // update
+    var k = kf.p / (kf.p + K_R);
+    kf.x = kf.x + k * (z - kf.x);
+    kf.p = (1 - k) * kf.p;
+    return kf.x;
+  }
+
+  function resetKalman() {
+    kf.initialized = false; kf.x = 0; kf.p = 1.0;
+    lastRawRssi = null; lastRawRssiTime = 0;
+  }
+
+  // ===== Geom =====
   function rssiToDistance(rssi) {
     return Math.pow(10, (cfg.txPower - rssi) / (10 * cfg.n));
   }
@@ -231,6 +301,9 @@ export const webviewHtml = `<!DOCTYPE html>
     return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
   }
 
+  // Cluster les mesures spatialement et ne garde par cluster que la mesure de plus haut RSSI
+  // (le max local est plus proche de la vraie distance que la moyenne : le canal BLE
+  // p\xE9nalise par multipath/obstacles, jamais l'inverse).
   function deduplicate(pts, minDist) {
     var out = [];
     for (var i = 0; i < pts.length; i++) {
@@ -238,23 +311,56 @@ export const webviewHtml = `<!DOCTYPE html>
       for (var j = 0; j < out.length; j++) {
         if (getDistance(p.lat, p.lng, out[j].lat, out[j].lng) < minDist) {
           if (p.rssi > out[j].rssi) {
-            out[j].lat = p.lat; out[j].lng = p.lng; out[j].rssi = p.rssi; out[j].dist = p.dist;
+            out[j].lat = p.lat; out[j].lng = p.lng; out[j].rssi = p.rssi; out[j].dist = p.dist; out[j].acc = p.acc;
           }
           merged = true; break;
         }
       }
-      if (!merged) out.push({ lat:p.lat, lng:p.lng, rssi:p.rssi, dist:p.dist });
+      if (!merged) out.push({ lat:p.lat, lng:p.lng, rssi:p.rssi, dist:p.dist, acc:p.acc });
     }
     return out;
   }
 
+  // Spread spatial maximum + angle de vue depuis le centro\xEFde
+  function baselineMetrics(pts) {
+    if (pts.length < 2) return { spread: 0, angle: 0 };
+    // spread = distance max entre 2 points
+    var spread = 0;
+    for (var i = 0; i < pts.length; i++) {
+      for (var j = i+1; j < pts.length; j++) {
+        var d = getDistance(pts[i].lat, pts[i].lng, pts[j].lat, pts[j].lng);
+        if (d > spread) spread = d;
+      }
+    }
+    // angle = couverture angulaire des points vus depuis leur propre centro\xEFde
+    var cLat = 0, cLng = 0;
+    for (var k = 0; k < pts.length; k++) { cLat += pts[k].lat; cLng += pts[k].lng; }
+    cLat /= pts.length; cLng /= pts.length;
+    var angles = [];
+    for (var m = 0; m < pts.length; m++) {
+      if (getDistance(cLat, cLng, pts[m].lat, pts[m].lng) < 0.3) continue;
+      angles.push(getBearing(cLat, cLng, pts[m].lat, pts[m].lng));
+    }
+    if (angles.length < 2) return { spread: spread, angle: 0 };
+    angles.sort(function(a,b){return a-b;});
+    var maxGap = 0;
+    for (var n = 0; n < angles.length; n++) {
+      var next = n === angles.length - 1 ? angles[0] + 360 : angles[n+1];
+      var gap = next - angles[n];
+      if (gap > maxGap) maxGap = gap;
+    }
+    var coverage = 360 - maxGap;
+    return { spread: spread, angle: coverage };
+  }
+
+  // Gauss-Newton sur dist^2, retourne aussi le residu RMS pour la zone d'incertitude
   function trilaterate(pts) {
     var lat = 0, lng = 0;
     for (var i = 0; i < pts.length; i++) { lat += pts[i].lat; lng += pts[i].lng; }
     lat /= pts.length; lng /= pts.length;
     var R = 6371000;
-    for (var it = 0; it < 50; it++) {
-      var gLat = 0, gLng = 0, step = 0;
+    for (var it = 0; it < 60; it++) {
+      var gLat = 0, gLng = 0, step = 0, wTotal = 0;
       for (var k = 0; k < pts.length; k++) {
         var p = pts[k];
         var d = getDistance(lat, lng, p.lat, p.lng);
@@ -262,54 +368,105 @@ export const webviewHtml = `<!DOCTYPE html>
         var err = d - p.dist;
         var dLat = (lat - p.lat) * R * Math.PI / 180;
         var dLng = (lng - p.lng) * R * Math.cos(lat * Math.PI/180) * Math.PI / 180;
-        gLat += err * dLat / d;
-        gLng += err * dLng / d;
-        step += Math.abs(err);
+        // poids : qualit\xE9 GPS (1/acc^2 satur\xE9e) * 1/dist^2 (mesures proches plus fiables)
+        var accW = p.acc && p.acc > 0 ? 1.0 / Math.max(1, Math.min(p.acc, GPS_ACC_MAX_M)) : 1.0;
+        var w = accW * accW * (1.0 / (p.dist * p.dist + 1));
+        gLat += w * err * dLat / d;
+        gLng += w * err * dLng / d;
+        step += Math.abs(err) * w;
+        wTotal += w;
       }
-      var lr = 0.0001 / pts.length;
+      if (wTotal < 1e-9) break;
+      var lr = 0.0002 / wTotal;
       lat -= gLat * lr;
       lng -= gLng * lr;
-      if (step / pts.length < 0.05) break;
+      if (step / wTotal < 0.05) break;
     }
-    var check = 0;
-    for (var m = 0; m < pts.length; m++) check += getDistance(lat, lng, pts[m].lat, pts[m].lng);
-    if (check / pts.length > 500) return null;
-    return { lat: lat, lng: lng };
+    // residu rms (en m)
+    var sumSq = 0;
+    for (var m = 0; m < pts.length; m++) {
+      var dd = getDistance(lat, lng, pts[m].lat, pts[m].lng) - pts[m].dist;
+      sumSq += dd * dd;
+    }
+    var rms = Math.sqrt(sumSq / pts.length);
+    if (rms > 500) return null;
+    return { lat: lat, lng: lng, rms: rms };
   }
 
   function estimateBeaconPosition() {
-    if (measures.length < 1) return;
+    if (!myPos) return;
     var now = Date.now();
-    var recent = measures.filter(function(m){ return now - m.t < 30000; });
+    var recent = measures.filter(function(m){ return now - m.t < MEASURE_WINDOW_MS; });
     if (recent.length < 1) return;
     var unique = deduplicate(recent, 0.5);
-    if (unique.length === 1) {
-      placeBeaconMarker(unique[0].lat, unique[0].lng, unique[0].dist, 10, 'point unique');
+
+    var bm = baselineMetrics(unique);
+    var distFromRSSI = rssiToDistance(kf.x); // distance la plus r\xE9cente, pour fallback
+
+    var dbgBsl = bm.spread.toFixed(1);
+    var dbgAng = bm.angle.toFixed(0);
+    var dbgRms = '—';
+
+    // === Cas 1 : baseline insuffisante ===
+    // Pas assez de spread ou d'angle pour trianguler honn\xEAtement. On affiche
+    // un cercle "quelque part dans X m autour de toi" plut\xF4t que mentir
+    // avec un point pr\xE9cis.
+    var enoughBaseline = unique.length >= 3 && bm.spread >= MIN_BASELINE_M && bm.angle >= MIN_ANGLE_DEG;
+    if (!enoughBaseline) {
+      clearBeaconMarker();
+      // rayon = distance RSSI brute + marge GPS (1.5x pour incertitude propag\xE9e)
+      var radius = Math.max(2, distFromRSSI * 1.5);
+      placeAreaCircle(myPos.lat, myPos.lng, radius);
+      document.getElementById('dist-val').textContent = '~' + distFromRSSI.toFixed(1) + ' m';
+      document.getElementById('conf-val').innerHTML = '\u{1F534} faible <span style="color:var(--muted);font-size:.7rem">(baseline ' + dbgBsl + 'm / ' + dbgAng + '\xB0)</span>';
+      var hint;
+      if (unique.length < 3) hint = 'D\xE9place-toi pour collecter plus de mesures…';
+      else if (bm.spread < MIN_BASELINE_M) hint = 'Marche de quelques m\xE8tres pour trianguler…';
+      else hint = 'Contourne la zone pour \xE9largir l\'angle…';
+      document.getElementById('measures-count').textContent = measures.length + ' mesures \xB7 ' + hint;
+      // bearing : indisponible tant qu'on n'a pas une position triangul\xE9e
+      updateDebugBaseline(dbgBsl, dbgAng, dbgRms);
       return;
     }
-    var wLat = 0, wLng = 0, wSum = 0;
-    for (var i = 0; i < unique.length; i++) {
-      var w = 1 / (unique[i].dist * unique[i].dist + 0.01);
-      wLat += unique[i].lat * w; wLng += unique[i].lng * w; wSum += w;
+
+    // === Cas 2 : baseline OK, on triangule ===
+    clearAreaCircle();
+    var nls = trilaterate(unique);
+    if (!nls) {
+      // solveur a \xE9chou\xE9 \xE0 converger : fallback prudent
+      clearBeaconMarker();
+      placeAreaCircle(myPos.lat, myPos.lng, Math.max(2, distFromRSSI * 1.5));
+      updateDebugBaseline(dbgBsl, dbgAng, '—');
+      return;
     }
-    var finalPos = { lat: wLat/wSum, lng: wLng/wSum };
-    if (unique.length >= 3) {
-      var nls = trilaterate(unique);
-      if (nls) finalPos = nls;
-    }
-    var conf = Math.min(100, unique.length * 12 + (unique.length >= 3 ? 20 : 0));
-    placeBeaconMarker(finalPos.lat, finalPos.lng, null, conf, unique.length >= 3 ? 'trilat\xE9ration' : 'centro\xEFde');
-    if (myPos) {
-      var bearing = getBearing(myPos.lat, myPos.lng, finalPos.lat, finalPos.lng);
-      setCompassBearing(bearing);
-      var d = getDistance(myPos.lat, myPos.lng, finalPos.lat, finalPos.lng);
-      document.getElementById('dist-val').textContent = d < 1000 ? d.toFixed(1) + ' m' : (d/1000).toFixed(2) + ' km';
-      var confLabel = conf > 70 ? '\u{1F7E2} \xE9lev\xE9e' : conf > 40 ? '\u{1F7E1} moyenne' : '\u{1F534} faible';
-      document.getElementById('conf-val').textContent = confLabel;
-    }
+    dbgRms = nls.rms.toFixed(1);
+
+    // confiance : combine nb mesures, baseline, et rms r\xE9siduel
+    var rmsFactor = Math.max(0, 1 - nls.rms / 20); // rms <5m bien, >20m mauvais
+    var baseFactor = Math.min(1, (bm.spread / 15) * (bm.angle / 180));
+    var measFactor = Math.min(1, unique.length / 8);
+    var conf = Math.round(100 * (0.5 * rmsFactor + 0.3 * baseFactor + 0.2 * measFactor));
+    var method = 'trilat\xE9ration n=' + unique.length;
+    placeBeaconMarker(nls.lat, nls.lng, nls.rms, conf, method);
+
+    var bearing = getBearing(myPos.lat, myPos.lng, nls.lat, nls.lng);
+    setCompassBearing(bearing);
+    var d = getDistance(myPos.lat, myPos.lng, nls.lat, nls.lng);
+    document.getElementById('dist-val').textContent = d < 1000 ? d.toFixed(1) + ' m' : (d/1000).toFixed(2) + ' km';
+    var confLabel = conf > 65 ? '\u{1F7E2} \xE9lev\xE9e' : conf > 35 ? '\u{1F7E1} moyenne' : '\u{1F534} faible';
+    document.getElementById('conf-val').innerHTML = confLabel + ' <span style="color:var(--muted);font-size:.7rem">(±' + Math.round(nls.rms) + 'm)</span>';
+    document.getElementById('measures-count').textContent = measures.length + ' mesures \xB7 ' + method;
+    updateDebugBaseline(dbgBsl, dbgAng, dbgRms);
   }
 
-  function placeBeaconMarker(lat, lng, radius, conf, method) {
+  function updateDebugBaseline(bsl, ang, rms) {
+    var el;
+    el = document.getElementById('dbg-bsl'); if (el) el.textContent = bsl;
+    el = document.getElementById('dbg-ang'); if (el) el.textContent = ang;
+    el = document.getElementById('dbg-rms'); if (el) el.textContent = rms;
+  }
+
+  function placeBeaconMarker(lat, lng, rms, conf, method) {
     beaconPos = { lat: lat, lng: lng };
     lineLayer.clearLayers();
     if (!markerBeacon) {
@@ -318,13 +475,39 @@ export const webviewHtml = `<!DOCTYPE html>
     } else {
       markerBeacon.setLatLng([lat, lng]);
     }
-    if (radius && radius < 200) {
-      L.circle([lat, lng], { radius: radius, color: '#58a6ff', fill: true, fillColor: '#58a6ff', fillOpacity: 0.08, weight: 1, dashArray: '4,4' }).addTo(lineLayer);
-    }
+    // Zone d'incertitude : cercle bas\xE9 sur le RMS r\xE9siduel du solveur,
+    // born\xE9 entre 2 m et 80 m pour rester lisible \xE0 l'\xE9cran.
+    if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
+    var radius = Math.max(2, Math.min(80, rms * 1.5));
+    uncertaintyCircle = L.circle([lat, lng], {
+      radius: radius, color: '#58a6ff', fill: true, fillColor: '#58a6ff',
+      fillOpacity: 0.08, weight: 1, dashArray: '4,4'
+    }).addTo(lineLayer);
     if (myPos) {
       L.polyline([[myPos.lat, myPos.lng],[lat, lng]], { color: '#58a6ff', weight: 1.5, opacity: 0.5, dashArray: '6,4' }).addTo(lineLayer);
     }
-    document.getElementById('measures-count').textContent = measures.length + ' mesures \xB7 ' + method;
+  }
+
+  function clearBeaconMarker() {
+    if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
+    if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
+    lineLayer.clearLayers();
+    beaconPos = null;
+    // compass : on remet \xE0 z\xE9ro tant qu'on n'a pas de bearing fiable
+    lastBearing = null;
+    document.getElementById('compass-arrow').style.transform = 'translate(-50%,-50%) rotate(0deg)';
+  }
+
+  function placeAreaCircle(lat, lng, radius) {
+    if (areaCircle) { areaCircle.remove(); areaCircle = null; }
+    areaCircle = L.circle([lat, lng], {
+      radius: radius, color: '#f0b429', fill: true, fillColor: '#f0b429',
+      fillOpacity: 0.05, weight: 1.5, dashArray: '8,6'
+    }).bindTooltip('Mia : quelque part dans ce cercle', { sticky: true }).addTo(map);
+  }
+
+  function clearAreaCircle() {
+    if (areaCircle) { areaCircle.remove(); areaCircle = null; }
   }
 
   function addMeasureMarker(lat, lng, rssi, dist) {
@@ -369,25 +552,95 @@ export const webviewHtml = `<!DOCTYPE html>
     else          { btn.textContent = '▶ Scanner'; btn.className = 'btn primary'; }
   }
 
-  // ===== Handle measurements coming from RN =====
-  function handleRSSI(rssi, name) {
-    rssiWindow.push(rssi);
-    if (rssiWindow.length > cfg.smooth) rssiWindow.shift();
-    var smoothed = rssiWindow.reduce(function(a,b){return a+b;}, 0) / rssiWindow.length;
-    updateRSSIBar(smoothed);
-    setStatus('Beacon: ' + (name || cfg.name) + ' \xB7 RSSI ' + smoothed.toFixed(1) + ' dBm', 'active');
-    var dist = rssiToDistance(smoothed);
-    document.getElementById('dist-val').textContent = dist < 1000 ? dist.toFixed(1) + ' m' : '>1 km';
-    if (myPos) {
-      measures.push({ lat: myPos.lat, lng: myPos.lng, rssi: smoothed, dist: dist, t: Date.now() });
-      addMeasureMarker(myPos.lat, myPos.lng, smoothed, dist);
-      estimateBeaconPosition();
-      document.getElementById('measures-count').textContent = measures.length + ' mesures';
+  // ===== Hot / cold indicator =====
+  // Calcul de la pente du RSSI liss\xE9 sur HOT_COLD_WINDOW_MS.
+  // R\xE9gression lin\xE9aire simple : pente en dBm/s.
+  // RSSI augmente quand on se rapproche -> "chaud".
+  function updateHotCold() {
+    var now = Date.now();
+    // \xE9lague l'historique
+    while (rssiHistory.length && now - rssiHistory[0].t > HOT_COLD_WINDOW_MS) rssiHistory.shift();
+    var arrow = document.getElementById('hc-arrow');
+    var text  = document.getElementById('hc-text');
+    var slope = document.getElementById('hc-slope');
+    if (rssiHistory.length < 3) {
+      arrow.textContent = '—';
+      arrow.style.color = 'var(--neutral)';
+      text.textContent = scanning ? 'En attente de mesures…' : 'Scan arr\xEAt\xE9';
+      text.style.color = 'var(--neutral)';
+      slope.textContent = '— dBm/s';
+      return;
+    }
+    // r\xE9gression lin\xE9aire y = a*t + b, t en secondes depuis premi\xE8re mesure
+    var t0 = rssiHistory[0].t;
+    var sx = 0, sy = 0, sxx = 0, sxy = 0, nP = rssiHistory.length;
+    for (var i = 0; i < nP; i++) {
+      var ts = (rssiHistory[i].t - t0) / 1000;
+      var y = rssiHistory[i].rssi;
+      sx += ts; sy += y; sxx += ts*ts; sxy += ts*y;
+    }
+    var denom = nP * sxx - sx * sx;
+    var slopeVal = denom > 1e-6 ? (nP * sxy - sx * sy) / denom : 0; // dBm/s
+    var deltaDbm = slopeVal * Math.min(HOT_COLD_WINDOW_MS / 1000, (now - t0) / 1000);
+    slope.textContent = (slopeVal >= 0 ? '+' : '') + slopeVal.toFixed(2) + ' dBm/s';
+    if (deltaDbm > HOT_COLD_HYST_DBM) {
+      arrow.textContent = '\u{1F525}';
+      arrow.style.color = 'var(--hot)';
+      text.textContent = 'Tu te rapproches';
+      text.style.color = 'var(--hot)';
+    } else if (deltaDbm < -HOT_COLD_HYST_DBM) {
+      arrow.textContent = '\u{2744}';
+      arrow.style.color = 'var(--cold)';
+      text.textContent = 'Tu t\'\xE9loignes';
+      text.style.color = 'var(--cold)';
+    } else {
+      arrow.textContent = '≈';
+      arrow.style.color = 'var(--neutral)';
+      text.textContent = 'Stable';
+      text.style.color = 'var(--neutral)';
     }
   }
 
-  function handleGPS(lat, lng) {
-    myPos = { lat: lat, lng: lng };
+  // ===== Handle measurements coming from RN =====
+  function handleRSSI(rssi, name) {
+    var now = Date.now();
+
+    // Garde anti-outlier : un saut > RSSI_JUMP_DBM en <1s est physiquement
+    // improbable pour un chat qui se d\xE9place. La valeur est quand m\xEAme
+    // affich\xE9e dans la barre RSSI (pour transparence), mais on ne nourrit
+    // ni le Kalman, ni la triangulation avec.
+    var keepForFusion = true;
+    if (lastRawRssi !== null && now - lastRawRssiTime < 1500) {
+      if (Math.abs(rssi - lastRawRssi) > RSSI_JUMP_DBM) keepForFusion = false;
+    }
+    lastRawRssi = rssi; lastRawRssiTime = now;
+
+    var smoothed = keepForFusion ? kalmanUpdate(rssi) : (kf.initialized ? kf.x : rssi);
+
+    updateRSSIBar(smoothed);
+    setStatus('Beacon: ' + (name || cfg.name) + ' \xB7 RSSI ' + smoothed.toFixed(1) + ' dBm', 'active');
+
+    // Historique pour chaud/froid (toujours, m\xEAme pour les outliers : on veut
+    // d\xE9tecter une vraie tendance, et le Kalman a d\xE9j\xE0 absorb\xE9 le saut)
+    rssiHistory.push({ t: now, rssi: smoothed });
+    updateHotCold();
+
+    var dist = rssiToDistance(smoothed);
+    document.getElementById('dist-val').textContent = dist < 1000 ? dist.toFixed(1) + ' m' : '>1 km';
+
+    if (keepForFusion && myPos) {
+      // Pond\xE9ration par accuracy GPS : on jette les mesures avec GPS trop d\xE9grad\xE9
+      // (au-del\xE0 de GPS_ACC_MAX_M), elles n'apportent que du bruit \xE0 la triangulation.
+      if (myPos.acc == null || myPos.acc <= GPS_ACC_MAX_M) {
+        measures.push({ lat: myPos.lat, lng: myPos.lng, acc: myPos.acc || 5, rssi: smoothed, dist: dist, t: now });
+        addMeasureMarker(myPos.lat, myPos.lng, smoothed, dist);
+        estimateBeaconPosition();
+      }
+    }
+  }
+
+  function handleGPS(lat, lng, acc) {
+    myPos = { lat: lat, lng: lng, acc: (typeof acc === 'number' && acc > 0) ? acc : null };
     if (!markerMe) {
       markerMe = L.marker([lat, lng], { icon: makeIcon('marker-me') })
         .bindTooltip('Vous', { permanent: false }).addTo(map);
@@ -398,6 +651,8 @@ export const webviewHtml = `<!DOCTYPE html>
       map.setView([lat, lng], 19);
       mapAutoCentered = true;
     }
+    var el = document.getElementById('dbg-gpsacc');
+    if (el) el.textContent = myPos.acc != null ? myPos.acc.toFixed(1) : '—';
   }
 
   // ===== Buttons =====
@@ -418,15 +673,24 @@ export const webviewHtml = `<!DOCTYPE html>
   };
 
   window.clearMeasures = function() {
-    measures = []; rssiWindow = []; beaconPos = null; lastBearing = null;
+    measures = []; rssiHistory = []; beaconPos = null; lastBearing = null;
+    resetKalman();
     measureLayer.clearLayers(); lineLayer.clearLayers();
     if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
+    if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
+    clearAreaCircle();
     document.getElementById('measures-count').textContent = '0 mesures';
     document.getElementById('dist-val').textContent = '—';
     document.getElementById('conf-val').textContent = '—';
     document.getElementById('rssi-val').textContent = '— dBm';
     document.getElementById('rssi-fill').style.width = '0%';
     document.getElementById('compass-arrow').style.transform = 'translate(-50%,-50%) rotate(0deg)';
+    document.getElementById('hc-arrow').textContent = '—';
+    document.getElementById('hc-arrow').style.color = 'var(--neutral)';
+    document.getElementById('hc-text').textContent = 'En attente de mesures…';
+    document.getElementById('hc-text').style.color = 'var(--neutral)';
+    document.getElementById('hc-slope').textContent = '— dBm/s';
+    updateDebugBaseline('—','—','—');
     snack('Mesures effac\xE9es');
   };
 
@@ -452,8 +716,11 @@ export const webviewHtml = `<!DOCTYPE html>
     }
   })();
 
+  // R\xE9-applique le bearing p\xE9riodiquement pour suivre la rotation du t\xE9l\xE9phone
+  // et rafra\xEEchit l'indicateur chaud/froid (sa pente \xE9volue avec le temps).
   setInterval(function() {
     if (lastBearing !== null) setCompassBearing(lastBearing);
+    if (scanning) updateHotCold();
   }, 500);
 
   // ===== Message bridge from RN =====
@@ -462,20 +729,25 @@ export const webviewHtml = `<!DOCTYPE html>
       var msg = JSON.parse(raw);
       switch (msg.type) {
         case 'rssi':       handleRSSI(msg.rssi, msg.name); break;
-        case 'gps':        handleGPS(msg.lat, msg.lng); break;
+        case 'gps':        handleGPS(msg.lat, msg.lng, msg.acc); break;
         case 'heading':    deviceHeading = msg.heading; break;
         case 'scanState':  scanning = msg.scanning; updateScanBtn();
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arr\xEAt\xE9', msg.scanning ? 'active' : '');
-                           document.getElementById('debug-bar').classList.toggle('show', !!msg.scanning);
-                           if (msg.scanning) { ['dbg-nat','dbg-natm'].forEach(function(id){document.getElementById(id).textContent='0';}); document.getElementById('dbg-natr').textContent='—'; document.getElementById('dbg-age').textContent='—'; }
+                           applyDebugVisibility();
+                           if (msg.scanning) {
+                             ['dbg-nat','dbg-natm'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='0';});
+                             ['dbg-natr','dbg-age','dbg-gpsacc','dbg-bsl','dbg-ang','dbg-rms'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='—';});
+                           }
+                           updateHotCold();
                            break;
-        case 'debug':      if (msg.nativePing) document.getElementById('dbg-natp').textContent = msg.nativePing;
-                           if (msg.mac) document.getElementById('dbg-mac').textContent = msg.mac;
-                           document.getElementById('dbg-nat').textContent = msg.scans || 0;
-                           document.getElementById('dbg-natm').textContent = msg.matched || 0;
-                           document.getElementById('dbg-natr').textContent = msg.lastRssi || '—';
-                           document.getElementById('dbg-age').textContent = (msg.lastAgeSec != null && msg.lastAgeSec >= 0) ? msg.lastAgeSec : '—';
-                           if (msg.nativeDiag) document.getElementById('dbg-natd').textContent = msg.nativeDiag;
+        case 'debug':      var e;
+                           if (msg.nativePing) { e = document.getElementById('dbg-natp'); if (e) e.textContent = msg.nativePing; }
+                           if (msg.mac) { e = document.getElementById('dbg-mac'); if (e) e.textContent = msg.mac; }
+                           e = document.getElementById('dbg-nat'); if (e) e.textContent = msg.scans || 0;
+                           e = document.getElementById('dbg-natm'); if (e) e.textContent = msg.matched || 0;
+                           e = document.getElementById('dbg-natr'); if (e) e.textContent = msg.lastRssi || '—';
+                           e = document.getElementById('dbg-age'); if (e) e.textContent = (msg.lastAgeSec != null && msg.lastAgeSec >= 0) ? msg.lastAgeSec : '—';
+                           if (msg.nativeDiag) { e = document.getElementById('dbg-natd'); if (e) e.textContent = msg.nativeDiag; }
                            break;
         case 'status':     setStatus(msg.msg, msg.state || ''); break;
         case 'error':      setStatus(msg.msg, 'error'); snack(msg.msg); break;

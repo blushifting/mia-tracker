@@ -103,7 +103,12 @@ export default function App() {
       locationSubRef.current = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
         (pos) => {
-          postToWebview({ type: 'gps', lat: pos.coords.latitude, lng: pos.coords.longitude });
+          postToWebview({
+            type: 'gps',
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            acc: pos.coords.accuracy ?? null,
+          });
         }
       );
     } catch (e: any) {
