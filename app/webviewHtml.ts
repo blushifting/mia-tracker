@@ -77,6 +77,19 @@ export const webviewHtml = `<!DOCTYPE html>
   #debug-bar .dbg-row{display:flex;justify-content:space-between;gap:8px;}
   #debug-bar .dbg-key{color:var(--accent);}
   #debug-bar .dbg-hex{color:var(--beacon);word-break:break-all;font-size:.6rem;}
+  #motion-pill{display:none;align-items:center;gap:6px;padding:3px 10px;border-radius:14px;font-size:.65rem;font-family:'Share Tech Mono',monospace;background:var(--surface);border:1px solid var(--border);color:var(--muted);}
+  #motion-pill.show{display:inline-flex;}
+  #motion-pill.moving{color:var(--accent);border-color:var(--accent);}
+  #motion-pill.still{color:var(--warn);border-color:var(--warn);}
+  #calib-overlay{position:fixed;inset:0;background:rgba(13,17,23,.94);z-index:2000;display:none;flex-direction:column;align-items:center;justify-content:center;padding:32px;gap:20px;text-align:center;}
+  #calib-overlay.open{display:flex;}
+  #calib-title{font-size:1.05rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);}
+  #calib-msg{font-size:.9rem;color:var(--text);max-width:320px;line-height:1.5;}
+  #calib-progress{width:240px;height:8px;background:var(--border);border-radius:4px;overflow:hidden;}
+  #calib-progress-fill{height:100%;width:0%;background:var(--accent);transition:width .3s linear;}
+  #calib-count{font-family:'Share Tech Mono',monospace;font-size:2rem;color:var(--beacon);}
+  #calib-rssi{font-family:'Share Tech Mono',monospace;font-size:.85rem;color:var(--muted);}
+  #calib-actions{display:flex;gap:10px;}
   .leaflet-tooltip{background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'Share Tech Mono',monospace;font-size:.7rem;}
   .marker-me{width:14px;height:14px;background:var(--accent);border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px var(--accent);}
   .marker-beacon{width:18px;height:18px;background:var(--beacon);border:2px solid #fff;border-radius:50%;box-shadow:0 0 12px var(--beacon);}
@@ -107,8 +120,21 @@ export const webviewHtml = `<!DOCTYPE html>
     <input id="cfg-name" type="text" value="Mia">
   </div>
   <div class="field row-field">
+    <label>Vibration "chaud/froid"</label>
+    <div id="cfg-haptic-switch" class="switch" onclick="toggleHaptic()"></div>
+  </div>
+  <div class="field row-field">
+    <label>Gel quand t\xE9l\xE9phone immobile</label>
+    <div id="cfg-stillgate-switch" class="switch" onclick="toggleStillGate()"></div>
+  </div>
+  <div class="field row-field">
     <label>Afficher la barre de debug</label>
     <div id="cfg-debug-switch" class="switch" onclick="toggleDebug()"></div>
+  </div>
+  <div class="field">
+    <label>Calibration TxPower</label>
+    <button class="btn warn" onclick="startCalibration()" style="margin-top:4px;">\u{1F4CF} Calibrer \xE0 1 m</button>
+    <div class="hint">Pose le t\xE9l\xE9phone \xE0 exactement 1 m de Mia, immobile. Mesure de 10 s pour auto-calibrer la TxPower r\xE9elle.</div>
   </div>
   <div class="config-actions">
     <button class="btn primary" onclick="saveConfig()">✓ Enregistrer</button>
@@ -116,10 +142,21 @@ export const webviewHtml = `<!DOCTYPE html>
   </div>
 </div>
 
+<div id="calib-overlay">
+  <div id="calib-title">Calibration TxPower</div>
+  <div id="calib-msg">Pose le t\xE9l\xE9phone \xE0 1 m de Mia, immobile.<br>Mesure dans <span id="calib-count">3</span>s…</div>
+  <div id="calib-progress"><div id="calib-progress-fill"></div></div>
+  <div id="calib-rssi">RSSI moyen : — dBm</div>
+  <div id="calib-actions">
+    <button class="btn danger" onclick="cancelCalibration()">Annuler</button>
+  </div>
+</div>
+
 <div id="app">
   <div id="header">
     <div id="status-dot"></div>
     <div id="status-text">D\xE9marrage…</div>
+    <div id="motion-pill"><span id="motion-icon">•</span><span id="motion-label">—</span></div>
     <h1 id="header-title">\u{1F431} Mia</h1>
   </div>
   <div id="debug-bar">
@@ -167,7 +204,9 @@ export const webviewHtml = `<!DOCTYPE html>
   var cfg = {
     uuid: 'FDA50693-A4E2-4FB1-AFCF-C6EB07647825',
     txPower: -40, n: 2.5, name: 'Mia',
-    showDebug: false
+    showDebug: false,
+    haptic: true,
+    stillGate: true
   };
   try {
     var saved = localStorage.getItem('miatracker_cfg');
@@ -186,6 +225,8 @@ export const webviewHtml = `<!DOCTYPE html>
   var MIN_BASELINE_M = 5;          // spread spatial minimum pour publier une position triangul\xE9e
   var MIN_ANGLE_DEG = 60;          // angle de vue minimum depuis le centro\xEFde
   var MEASURE_WINDOW_MS = 30000;   // fen\xEAtre temporelle des mesures retenues
+  var HAPTIC_TICK_MS = 1400;       // p\xE9riode minimum entre 2 vibrations
+  var CALIB_DURATION_MS = 10000;   // dur\xE9e de la mesure de calibration
 
   function postRN(msg) {
     if (window.ReactNativeWebView) {
@@ -200,6 +241,8 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-name').value = cfg.name;
     document.getElementById('header-title').textContent = '\u{1F431} ' + cfg.name;
     document.getElementById('cfg-debug-switch').classList.toggle('on', !!cfg.showDebug);
+    document.getElementById('cfg-haptic-switch').classList.toggle('on', !!cfg.haptic);
+    document.getElementById('cfg-stillgate-switch').classList.toggle('on', !!cfg.stillGate);
     applyDebugVisibility();
   }
 
@@ -213,6 +256,16 @@ export const webviewHtml = `<!DOCTYPE html>
     cfg.showDebug = !cfg.showDebug;
     document.getElementById('cfg-debug-switch').classList.toggle('on', cfg.showDebug);
     applyDebugVisibility();
+  };
+
+  window.toggleHaptic = function() {
+    cfg.haptic = !cfg.haptic;
+    document.getElementById('cfg-haptic-switch').classList.toggle('on', cfg.haptic);
+  };
+
+  window.toggleStillGate = function() {
+    cfg.stillGate = !cfg.stillGate;
+    document.getElementById('cfg-stillgate-switch').classList.toggle('on', cfg.stillGate);
   };
 
   window.openConfig = function() { document.getElementById('config-panel').classList.add('open'); };
@@ -260,6 +313,17 @@ export const webviewHtml = `<!DOCTYPE html>
   var kf = { initialized: false, x: 0, p: 1.0 };
   var lastRawRssi = null;
   var lastRawRssiTime = 0;
+
+  // Stillness gate (vient de l'accelerometre via RN)
+  var isStill = false;       // true = telephone immobile
+  var stillSinceMs = 0;      // depuis quand on est immobile (pour les transitions)
+
+  // Haptic feedback state
+  var lastHapticMs = 0;
+  var lastHotcoldState = 'idle'; // 'hot' / 'cold' / 'stable' / 'idle'
+
+  // Calibration state
+  var calib = null; // { phase: 'countdown'|'recording'|'done', startMs, samples: [], timer }
 
   function kalmanUpdate(z) {
     if (!kf.initialized) {
@@ -583,22 +647,43 @@ export const webviewHtml = `<!DOCTYPE html>
     var slopeVal = denom > 1e-6 ? (nP * sxy - sx * sy) / denom : 0; // dBm/s
     var deltaDbm = slopeVal * Math.min(HOT_COLD_WINDOW_MS / 1000, (now - t0) / 1000);
     slope.textContent = (slopeVal >= 0 ? '+' : '') + slopeVal.toFixed(2) + ' dBm/s';
+    var newState;
     if (deltaDbm > HOT_COLD_HYST_DBM) {
       arrow.textContent = '\u{1F525}';
       arrow.style.color = 'var(--hot)';
       text.textContent = 'Tu te rapproches';
       text.style.color = 'var(--hot)';
+      newState = 'hot';
     } else if (deltaDbm < -HOT_COLD_HYST_DBM) {
       arrow.textContent = '\u{2744}';
       arrow.style.color = 'var(--cold)';
       text.textContent = 'Tu t\'\xE9loignes';
       text.style.color = 'var(--cold)';
+      newState = 'cold';
     } else {
       arrow.textContent = '≈';
       arrow.style.color = 'var(--neutral)';
       text.textContent = 'Stable';
       text.style.color = 'var(--neutral)';
+      newState = 'stable';
     }
+    triggerHapticIfHot(newState);
+    lastHotcoldState = newState;
+  }
+
+  // Haptique : tick periodique quand on se rapproche, intensite croissante avec le RSSI.
+  // -75 dBm = loin (intensite 1), -65 = moyen (2), -55+ = tres proche (3).
+  function triggerHapticIfHot(state) {
+    if (!cfg.haptic) return;
+    if (state !== 'hot') return;
+    var now = Date.now();
+    if (now - lastHapticMs < HAPTIC_TICK_MS) return;
+    var r = kf.x || -75;
+    var intensity = 1;
+    if (r > -55) intensity = 3;
+    else if (r > -65) intensity = 2;
+    lastHapticMs = now;
+    postRN({ type: 'haptic', intensity: intensity });
   }
 
   // ===== Handle measurements coming from RN =====
@@ -628,10 +713,19 @@ export const webviewHtml = `<!DOCTYPE html>
     var dist = rssiToDistance(smoothed);
     document.getElementById('dist-val').textContent = dist < 1000 ? dist.toFixed(1) + ' m' : '>1 km';
 
+    // Si on est en calibration, alimente les samples (qu'on soit avec ou sans GPS).
+    if (calib && calib.phase === 'recording' && keepForFusion) {
+      calib.samples.push(smoothed);
+    }
+
     if (keepForFusion && myPos) {
       // Pond\xE9ration par accuracy GPS : on jette les mesures avec GPS trop d\xE9grad\xE9
       // (au-del\xE0 de GPS_ACC_MAX_M), elles n'apportent que du bruit \xE0 la triangulation.
-      if (myPos.acc == null || myPos.acc <= GPS_ACC_MAX_M) {
+      var accOK = (myPos.acc == null || myPos.acc <= GPS_ACC_MAX_M);
+      // Still gate : si l'accelero dit immobile depuis >1s, on n'ajoute plus
+      // de mesures triangulation (sinon le GPS qui derive cree de fausses baselines).
+      var stillBlock = cfg.stillGate && isStill && stillSinceMs > 0 && (now - stillSinceMs) > 1000;
+      if (accOK && !stillBlock) {
         measures.push({ lat: myPos.lat, lng: myPos.lng, acc: myPos.acc || 5, rssi: smoothed, dist: dist, t: now });
         addMeasureMarker(myPos.lat, myPos.lng, smoothed, dist);
         estimateBeaconPosition();
@@ -654,6 +748,93 @@ export const webviewHtml = `<!DOCTYPE html>
     var el = document.getElementById('dbg-gpsacc');
     if (el) el.textContent = myPos.acc != null ? myPos.acc.toFixed(1) : '—';
   }
+
+  // ===== Stillness pill =====
+  function updateMotionPill() {
+    var pill = document.getElementById('motion-pill');
+    if (!scanning) { pill.classList.remove('show','still','moving'); return; }
+    pill.classList.add('show');
+    if (isStill) {
+      pill.classList.remove('moving'); pill.classList.add('still');
+      document.getElementById('motion-icon').textContent = '\u{23F8}';
+      document.getElementById('motion-label').textContent = cfg.stillGate ? 'gel actif' : 'immobile';
+    } else {
+      pill.classList.remove('still'); pill.classList.add('moving');
+      document.getElementById('motion-icon').textContent = '\u{1F6B6}';
+      document.getElementById('motion-label').textContent = 'en mouvement';
+    }
+  }
+
+  // ===== Calibration TxPower =====
+  // Workflow : 3s de countdown -> 10s de mesure -> moyenne du Kalman -> ecrit cfg.txPower
+  window.startCalibration = function() {
+    if (calib) return;
+    if (!scanning) { snack('Lance d\'abord le scan pour calibrer'); return; }
+    closeConfig();
+    calib = { phase: 'countdown', startMs: Date.now(), samples: [], timer: null };
+    document.getElementById('calib-overlay').classList.add('open');
+    document.getElementById('calib-progress-fill').style.width = '0%';
+    document.getElementById('calib-rssi').textContent = 'RSSI moyen : — dBm';
+    var counter = 3;
+    document.getElementById('calib-msg').innerHTML = 'Pose le t\xE9l\xE9phone \xE0 1 m de Mia, immobile.<br>Mesure dans <span id="calib-count">' + counter + '</span>s…';
+    calib.timer = setInterval(function() {
+      if (!calib) return;
+      if (calib.phase === 'countdown') {
+        counter--;
+        var el = document.getElementById('calib-count');
+        if (el) el.textContent = counter;
+        if (counter <= 0) {
+          calib.phase = 'recording';
+          calib.startMs = Date.now();
+          calib.samples = [];
+          document.getElementById('calib-msg').textContent = 'Mesure en cours… Ne bouge pas.';
+        }
+      } else if (calib.phase === 'recording') {
+        var elapsed = Date.now() - calib.startMs;
+        var pct = Math.min(100, (elapsed / CALIB_DURATION_MS) * 100);
+        document.getElementById('calib-progress-fill').style.width = pct + '%';
+        if (calib.samples.length > 0) {
+          var sum = 0;
+          for (var i = 0; i < calib.samples.length; i++) sum += calib.samples[i];
+          var avg = sum / calib.samples.length;
+          document.getElementById('calib-rssi').textContent = 'RSSI moyen : ' + avg.toFixed(1) + ' dBm (' + calib.samples.length + ' \xE9chantillons)';
+        }
+        if (elapsed >= CALIB_DURATION_MS) finishCalibration();
+      }
+    }, 500);
+  };
+
+  function finishCalibration() {
+    if (!calib) return;
+    clearInterval(calib.timer);
+    if (calib.samples.length < 5) {
+      cancelCalibration();
+      snack('Pas assez de mesures — v\xE9rifie que le beacon est actif');
+      return;
+    }
+    var sum = 0;
+    for (var i = 0; i < calib.samples.length; i++) sum += calib.samples[i];
+    var avg = sum / calib.samples.length;
+    cfg.txPower = parseFloat(avg.toFixed(1));
+    localStorage.setItem('miatracker_cfg', JSON.stringify(cfg));
+    document.getElementById('cfg-txpower').value = cfg.txPower;
+    document.getElementById('calib-overlay').classList.remove('open');
+    calib = null;
+    snack('TxPower calibr\xE9 \xE0 ' + cfg.txPower + ' dBm (' + cfg.txPower + ' dBm \xE0 1 m)');
+    // Repart sur des bases propres : les anciennes mesures \xE9taient calcul\xE9es
+    // avec l'ancien txPower, donc leur dist embarqu\xE9e est obsol\xE8te.
+    measures = []; measureLayer.clearLayers(); lineLayer.clearLayers();
+    if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
+    if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
+    clearAreaCircle();
+  }
+
+  window.cancelCalibration = function() {
+    if (!calib) return;
+    clearInterval(calib.timer);
+    document.getElementById('calib-overlay').classList.remove('open');
+    calib = null;
+  };
 
   // ===== Buttons =====
   window.toggleScan = function() {
@@ -731,14 +912,21 @@ export const webviewHtml = `<!DOCTYPE html>
         case 'rssi':       handleRSSI(msg.rssi, msg.name); break;
         case 'gps':        handleGPS(msg.lat, msg.lng, msg.acc); break;
         case 'heading':    deviceHeading = msg.heading; break;
+        case 'still':      isStill = !!msg.isStill;
+                           stillSinceMs = isStill ? Date.now() : 0;
+                           updateMotionPill();
+                           break;
         case 'scanState':  scanning = msg.scanning; updateScanBtn();
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arr\xEAt\xE9', msg.scanning ? 'active' : '');
                            applyDebugVisibility();
                            if (msg.scanning) {
                              ['dbg-nat','dbg-natm'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='0';});
                              ['dbg-natr','dbg-age','dbg-gpsacc','dbg-bsl','dbg-ang','dbg-rms'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='—';});
+                           } else {
+                             isStill = false; stillSinceMs = 0;
                            }
                            updateHotCold();
+                           updateMotionPill();
                            break;
         case 'debug':      var e;
                            if (msg.nativePing) { e = document.getElementById('dbg-natp'); if (e) e.textContent = msg.nativePing; }

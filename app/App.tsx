@@ -9,11 +9,19 @@ import {
 } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import * as Location from 'expo-location';
+import { Accelerometer } from 'expo-sensors';
+import * as Haptics from 'expo-haptics';
 import IBeaconScanner, { IBeaconEvent, DiagEvent } from 'ibeacon-scanner';
 import { webviewHtml } from './webviewHtml';
 
 // MAC du collier de Mia (RDL810-B2). Cf. RECAP-IBEACON-DEBUG.md piste G.
 const TARGET_MAC = '51:00:25:09:00:4E';
+
+// Detection immobile : variance accelero (norme g) sur 2s.
+// Seuil 0.003 g^2 ~= une petite agitation suffit a passer en "mouvement".
+// Empirique : un tel pose sur table = ~0.0001, marche normale = ~0.05+.
+const STILL_VAR_THRESHOLD = 0.003;
+const STILL_WINDOW_MS = 2000;
 
 async function requestAndroidPermissions(): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
@@ -43,6 +51,9 @@ export default function App() {
     deviceName: '',
   });
   const statsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const accelSubRef = useRef<ReturnType<typeof Accelerometer.addListener> | null>(null);
+  const accelBufRef = useRef<{ t: number; mag: number }[]>([]);
+  const lastStillRef = useRef<boolean | null>(null);
   const [, setWebviewReady] = useState(false);
 
   useEffect(() => {
@@ -77,9 +88,55 @@ export default function App() {
       try { IBeaconScanner.stop(); } catch {}
       locationSubRef.current?.remove();
       headingSubRef.current?.remove();
+      accelSubRef.current?.remove();
       if (statsTimerRef.current) clearInterval(statsTimerRef.current);
     };
   }, []);
+
+  function startAccelerometer() {
+    if (accelSubRef.current) return;
+    Accelerometer.setUpdateInterval(100); // 10 Hz suffit pour distinguer immobile/mouvement
+    accelSubRef.current = Accelerometer.addListener(({ x, y, z }) => {
+      const mag = Math.sqrt(x * x + y * y + z * z); // norme en g (gravite ~ 1.0)
+      const now = Date.now();
+      const buf = accelBufRef.current;
+      buf.push({ t: now, mag });
+      // garde la fenetre glissante
+      while (buf.length && now - buf[0].t > STILL_WINDOW_MS) buf.shift();
+      if (buf.length < 10) return; // pas assez d'echantillons
+      // variance de la norme : insensible a l'orientation, sensible au mouvement
+      let mean = 0;
+      for (let i = 0; i < buf.length; i++) mean += buf[i].mag;
+      mean /= buf.length;
+      let v = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const d = buf[i].mag - mean;
+        v += d * d;
+      }
+      v /= buf.length;
+      const isStill = v < STILL_VAR_THRESHOLD;
+      // n'emet qu'au changement d'etat pour eviter le spam
+      if (lastStillRef.current !== isStill) {
+        lastStillRef.current = isStill;
+        postToWebview({ type: 'still', isStill, variance: v });
+      }
+    });
+  }
+
+  function stopAccelerometer() {
+    accelSubRef.current?.remove();
+    accelSubRef.current = null;
+    accelBufRef.current = [];
+    lastStillRef.current = null;
+  }
+
+  async function triggerHaptic(intensity: number) {
+    try {
+      if (intensity >= 3) await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      else if (intensity === 2) await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      else await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+  }
 
   function postToWebview(payload: any) {
     const json = JSON.stringify(payload).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -135,6 +192,7 @@ export default function App() {
     } catch (e: any) {
       postToWebview({ type: 'error', msg: 'Scan natif start: ' + (e?.message || 'erreur') });
     }
+    startAccelerometer();
     postToWebview({ type: 'scanState', scanning: true });
 
     if (statsTimerRef.current) clearInterval(statsTimerRef.current);
@@ -151,6 +209,7 @@ export default function App() {
     try { IBeaconScanner.stop(); } catch {}
     locationSubRef.current?.remove(); locationSubRef.current = null;
     headingSubRef.current?.remove(); headingSubRef.current = null;
+    stopAccelerometer();
     if (statsTimerRef.current) { clearInterval(statsTimerRef.current); statsTimerRef.current = null; }
     scanningRef.current = false;
     postToWebview({ type: 'scanState', scanning: false });
@@ -168,6 +227,9 @@ export default function App() {
         break;
       case 'stopScan':
         stopEverything();
+        break;
+      case 'haptic':
+        triggerHaptic(typeof msg.intensity === 'number' ? msg.intensity : 1);
         break;
     }
   }
