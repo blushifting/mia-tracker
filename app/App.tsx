@@ -65,6 +65,31 @@ export default function App() {
       statsRef.current.nativePing = 'CRASH: ' + (e?.message || 'unknown');
     }
 
+    // Sonde sensors + haptics : si un module manque, on saura via la debug bar
+    // plutot que d'avoir un crash silencieux a la premiere utilisation.
+    (async () => {
+      let accelStatus = 'unknown';
+      let hapticStatus = 'unknown';
+      try {
+        const ok = await Accelerometer.isAvailableAsync();
+        accelStatus = ok ? 'ok' : 'no-hw';
+      } catch (e: any) {
+        accelStatus = 'err:' + (e?.message || 'unknown').slice(0, 40);
+      }
+      try {
+        // Haptics n'a pas d'isAvailableAsync uniforme; on teste qu'on peut invoquer.
+        await Haptics.selectionAsync();
+        hapticStatus = 'ok';
+      } catch (e: any) {
+        hapticStatus = 'err:' + (e?.message || 'unknown').slice(0, 40);
+      }
+      // Stocke pour le payload debug periodique aussi
+      (statsRef.current as any).accel = accelStatus;
+      (statsRef.current as any).haptic = hapticStatus;
+      // Envoi immediat au webview (peut arriver avant 'ready', le webview ignore au pire)
+      setTimeout(() => postToWebview({ type: 'sensors', accel: accelStatus, haptic: hapticStatus }), 500);
+    })();
+
     const subI = IBeaconScanner.addListener('onIBeacon', (e: IBeaconEvent) => {
       statsRef.current.scans++;
       if (e.match) {
@@ -230,6 +255,12 @@ export default function App() {
         break;
       case 'haptic':
         triggerHaptic(typeof msg.intensity === 'number' ? msg.intensity : 1);
+        break;
+      case 'webview-error':
+        // Erreur captee par window.onerror cote webview. Log dans logcat pour
+        // pouvoir investiguer hors-app. La debug bar la montre deja en UI.
+        // eslint-disable-next-line no-console
+        console.log('[webview-error]', msg.msg);
         break;
     }
   }

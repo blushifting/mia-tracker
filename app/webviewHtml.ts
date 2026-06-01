@@ -72,11 +72,17 @@ export const webviewHtml = `<!DOCTYPE html>
   .config-actions{display:flex;gap:8px;margin-top:4px;}
   #snack{position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--surface);border:1px solid var(--border);padding:10px 18px;border-radius:20px;font-size:.8rem;color:var(--text);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;white-space:nowrap;z-index:999;}
   #snack.show{opacity:1;transform:translateX(-50%) translateY(0);}
-  #debug-bar{display:none;padding:6px 12px;background:#1a1f29;border-bottom:1px solid var(--border);font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--muted);line-height:1.45;flex-shrink:0;}
-  #debug-bar.show{display:block;}
+  #debug-bar{display:none;padding:6px 12px;background:#1a1f29;border-bottom:1px solid var(--border);font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--muted);line-height:1.45;flex-shrink:0;max-height:42vh;overflow-y:auto;}
+  #debug-bar.show,#debug-bar.show-boot,#debug-bar.show-error{display:block;}
+  #debug-bar.show-error{border-bottom:2px solid var(--danger);background:#2a1418;}
   #debug-bar .dbg-row{display:flex;justify-content:space-between;gap:8px;}
   #debug-bar .dbg-key{color:var(--accent);}
   #debug-bar .dbg-hex{color:var(--beacon);word-break:break-all;font-size:.6rem;}
+  #debug-bar .dbg-err{color:var(--danger);word-break:break-word;font-size:.65rem;}
+  #debug-bar .dbg-ok{color:var(--accent);}
+  #debug-bar .dbg-warn{color:var(--warn);}
+  #map-fallback{display:none;flex:1;align-items:center;justify-content:center;padding:32px;text-align:center;color:var(--muted);background:#1c2128;font-size:.85rem;line-height:1.5;}
+  #map-fallback.show{display:flex;flex-direction:column;gap:10px;}
   #motion-pill{display:none;align-items:center;gap:6px;padding:3px 10px;border-radius:14px;font-size:.65rem;font-family:'Share Tech Mono',monospace;background:var(--surface);border:1px solid var(--border);color:var(--muted);}
   #motion-pill.show{display:inline-flex;}
   #motion-pill.moving{color:var(--accent);border-color:var(--accent);}
@@ -160,11 +166,19 @@ export const webviewHtml = `<!DOCTYPE html>
     <h1 id="header-title">\u{1F431} Mia</h1>
   </div>
   <div id="debug-bar">
-    <div class="dbg-row"><span><span class="dbg-key">ping natif</span>: <span id="dbg-natp">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">boot</span>: <span id="dbg-boot" class="dbg-ok">init…</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">erreur</span>: <span id="dbg-err" class="dbg-err">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">leaflet</span>: <span id="dbg-leaflet">—</span> &middot; <span class="dbg-key">rx</span> rssi=<span id="dbg-rx-rssi">0</span> gps=<span id="dbg-rx-gps">0</span> still=<span id="dbg-rx-still">0</span> hdg=<span id="dbg-rx-hdg">0</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">ping natif</span>: <span id="dbg-natp">—</span> &middot; <span class="dbg-key">accel</span>: <span id="dbg-accel">—</span> &middot; <span class="dbg-key">haptic</span>: <span id="dbg-haptic">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">mac ciblee</span>: <span id="dbg-mac">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">scans</span> <span id="dbg-nat">0</span> &middot; <span class="dbg-key">matched</span> <span id="dbg-natm">0</span> &middot; <span class="dbg-key">rssi</span> <span id="dbg-natr">—</span> dBm &middot; <span class="dbg-key">age</span> <span id="dbg-age">—</span>s</span></div>
-    <div class="dbg-row"><span><span class="dbg-key">gps acc</span> <span id="dbg-gpsacc">—</span> m &middot; <span class="dbg-key">baseline</span> <span id="dbg-bsl">—</span> m / <span id="dbg-ang">—</span>\xB0 &middot; <span class="dbg-key">rms</span> <span id="dbg-rms">—</span> m</span></div>
+    <div class="dbg-row"><span><span class="dbg-key">gps acc</span> <span id="dbg-gpsacc">—</span> m &middot; <span class="dbg-key">still</span> <span id="dbg-still">—</span> &middot; <span class="dbg-key">var</span> <span id="dbg-var">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">baseline</span> <span id="dbg-bsl">—</span> m / <span id="dbg-ang">—</span>\xB0 &middot; <span class="dbg-key">rms</span> <span id="dbg-rms">—</span> m &middot; <span class="dbg-key">kf.x</span> <span id="dbg-kfx">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
+  </div>
+  <div id="map-fallback">
+    <div style="font-size:1.2rem;color:var(--warn);">\u{26A0} Carte indisponible</div>
+    <div>Pas de r\xE9seau ou Leaflet bloqu\xE9.<br>L'app fonctionne quand m\xEAme : RSSI, chaud/froid, calibration.</div>
   </div>
   <div id="map"></div>
   <div id="hotcold">
@@ -199,7 +213,50 @@ export const webviewHtml = `<!DOCTYPE html>
 <div id="snack"></div>
 
 <script>
+// ===== Global error handlers (avant l'IIFE pour capter ses propres crashes) =====
+(function setupGlobalErrors(){
+  var errs = [];
+  function show(msg) {
+    errs.push(msg);
+    try {
+      var bar = document.getElementById('debug-bar');
+      var err = document.getElementById('dbg-err');
+      if (bar) bar.classList.add('show-error');
+      if (err) err.textContent = errs.slice(-3).join(' || ');
+      // Remonte aussi au natif (logcat via console + postMessage)
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'webview-error', msg: msg }));
+      }
+    } catch(e) {}
+  }
+  window.addEventListener('error', function(e) {
+    show('JS: ' + (e.message || (e.error && e.error.message) || 'unknown') + ' @' + (e.filename || '?') + ':' + (e.lineno || '?'));
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    show('Promise: ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+  });
+  window.__bootErr = show;
+})();
+
 (function(){
+  // ===== Boot trace =====
+  // Affiche dans la debug bar (force visible pendant le boot) chaque etape franchie.
+  // Si l'IIFE crash, on saura quelle etape a passe et laquelle a echoue.
+  var bootSteps = [];
+  function bootStep(s) {
+    bootSteps.push(s);
+    try {
+      var el = document.getElementById('dbg-boot');
+      if (el) el.textContent = bootSteps.join(' > ');
+    } catch(e) {}
+  }
+  function bootErr(msg) {
+    if (window.__bootErr) window.__bootErr(msg);
+  }
+  // Force la debug bar visible au boot, on la cache si tout OK apres 8s.
+  try { document.getElementById('debug-bar').classList.add('show-boot'); } catch(e){}
+  bootStep('iife');
+
   // ===== Config =====
   var cfg = {
     uuid: 'FDA50693-A4E2-4FB1-AFCF-C6EB07647825',
@@ -211,7 +268,11 @@ export const webviewHtml = `<!DOCTYPE html>
   try {
     var saved = localStorage.getItem('miatracker_cfg');
     if (saved) cfg = Object.assign(cfg, JSON.parse(saved));
-  } catch(e) {}
+    bootStep('cfg');
+  } catch(e) {
+    bootErr('cfg parse: ' + e.message);
+    bootStep('cfg-err');
+  }
 
   // ===== Tuning constants =====
   // RSSI vu en pratique : 10 dBm de variance statique observ\xE9e.
@@ -284,16 +345,38 @@ export const webviewHtml = `<!DOCTYPE html>
   };
 
   // ===== Map =====
-  var map = L.map('map', { zoomControl: true, attributionControl: false });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 22, subdomains: 'abcd' }).addTo(map);
-  L.control.attribution({ prefix: false, position: 'bottomleft' }).addAttribution('\xA9 OpenStreetMap \xB7 CartoDB').addTo(map);
-  map.setView([48.85, 2.35], 18);
-
-  var markerMe = null, markerBeacon = null;
-  var measureLayer = L.layerGroup().addTo(map);
-  var lineLayer = L.layerGroup().addTo(map);
+  // Si Leaflet (CDN) n'a pas charge, on tombe en mode "carte indisponible" et
+  // on conserve quand meme le RSSI/chaud-froid/calibration. Pas de crash global.
+  var map = null, markerMe = null, markerBeacon = null;
+  var measureLayer = null, lineLayer = null;
   var uncertaintyCircle = null;
-  var areaCircle = null; // cercle "quelque part dans X m" quand baseline insuffisante
+  var areaCircle = null;
+  var mapAvailable = false;
+  var leafletStatus = 'absent';
+
+  try {
+    if (typeof L === 'undefined') {
+      leafletStatus = 'undefined';
+      throw new Error('Leaflet non charge (CDN bloque ?)');
+    }
+    leafletStatus = 'v' + (L.version || '?');
+    map = L.map('map', { zoomControl: true, attributionControl: false });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 22, subdomains: 'abcd' }).addTo(map);
+    L.control.attribution({ prefix: false, position: 'bottomleft' }).addAttribution('\xA9 OpenStreetMap \xB7 CartoDB').addTo(map);
+    map.setView([48.85, 2.35], 18);
+    measureLayer = L.layerGroup().addTo(map);
+    lineLayer = L.layerGroup().addTo(map);
+    mapAvailable = true;
+    bootStep('map');
+  } catch(e) {
+    bootErr('map init: ' + e.message);
+    bootStep('map-err');
+    try {
+      document.getElementById('map').style.display = 'none';
+      document.getElementById('map-fallback').classList.add('show');
+    } catch(_){}
+  }
+  try { var el = document.getElementById('dbg-leaflet'); if (el) { el.textContent = leafletStatus; el.className = mapAvailable ? 'dbg-ok' : 'dbg-err'; } } catch(_){}
 
   function makeIcon(cls) {
     return L.divIcon({ className:'', html: '<div class="'+cls+'"></div>', iconSize:[14,14], iconAnchor:[7,7] });
@@ -324,6 +407,14 @@ export const webviewHtml = `<!DOCTYPE html>
 
   // Calibration state
   var calib = null; // { phase: 'countdown'|'recording'|'done', startMs, samples: [], timer }
+
+  // RX counters
+  var rx = { rssi: 0, gps: 0, still: 0, hdg: 0 };
+  function bumpRx(k) {
+    rx[k]++;
+    var el = document.getElementById('dbg-rx-' + k);
+    if (el) el.textContent = rx[k];
+  }
 
   function kalmanUpdate(z) {
     if (!kf.initialized) {
@@ -532,6 +623,7 @@ export const webviewHtml = `<!DOCTYPE html>
 
   function placeBeaconMarker(lat, lng, rms, conf, method) {
     beaconPos = { lat: lat, lng: lng };
+    if (!mapAvailable) return;
     lineLayer.clearLayers();
     if (!markerBeacon) {
       markerBeacon = L.marker([lat, lng], { icon: makeIcon('marker-beacon') })
@@ -553,9 +645,9 @@ export const webviewHtml = `<!DOCTYPE html>
   }
 
   function clearBeaconMarker() {
-    if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
-    if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
-    lineLayer.clearLayers();
+    if (markerBeacon) { try { markerBeacon.remove(); } catch(e){} markerBeacon = null; }
+    if (uncertaintyCircle) { try { uncertaintyCircle.remove(); } catch(e){} uncertaintyCircle = null; }
+    if (lineLayer) lineLayer.clearLayers();
     beaconPos = null;
     // compass : on remet \xE0 z\xE9ro tant qu'on n'a pas de bearing fiable
     lastBearing = null;
@@ -563,7 +655,8 @@ export const webviewHtml = `<!DOCTYPE html>
   }
 
   function placeAreaCircle(lat, lng, radius) {
-    if (areaCircle) { areaCircle.remove(); areaCircle = null; }
+    if (!mapAvailable) return;
+    if (areaCircle) { try { areaCircle.remove(); } catch(e){} areaCircle = null; }
     areaCircle = L.circle([lat, lng], {
       radius: radius, color: '#f0b429', fill: true, fillColor: '#f0b429',
       fillOpacity: 0.05, weight: 1.5, dashArray: '8,6'
@@ -575,6 +668,7 @@ export const webviewHtml = `<!DOCTYPE html>
   }
 
   function addMeasureMarker(lat, lng, rssi, dist) {
+    if (!mapAvailable) return;
     var pct = Math.max(0, Math.min(100, (rssi + 100) / 60 * 100));
     var color = pct > 66 ? '#39d353' : pct > 33 ? '#f0b429' : '#f85149';
     var icon = L.divIcon({
@@ -701,6 +795,7 @@ export const webviewHtml = `<!DOCTYPE html>
     lastRawRssi = rssi; lastRawRssiTime = now;
 
     var smoothed = keepForFusion ? kalmanUpdate(rssi) : (kf.initialized ? kf.x : rssi);
+    var kEl = document.getElementById('dbg-kfx'); if (kEl) kEl.textContent = smoothed.toFixed(1);
 
     updateRSSIBar(smoothed);
     setStatus('Beacon: ' + (name || cfg.name) + ' \xB7 RSSI ' + smoothed.toFixed(1) + ' dBm', 'active');
@@ -735,6 +830,9 @@ export const webviewHtml = `<!DOCTYPE html>
 
   function handleGPS(lat, lng, acc) {
     myPos = { lat: lat, lng: lng, acc: (typeof acc === 'number' && acc > 0) ? acc : null };
+    var el = document.getElementById('dbg-gpsacc');
+    if (el) el.textContent = myPos.acc != null ? myPos.acc.toFixed(1) : '—';
+    if (!mapAvailable) return;
     if (!markerMe) {
       markerMe = L.marker([lat, lng], { icon: makeIcon('marker-me') })
         .bindTooltip('Vous', { permanent: false }).addTo(map);
@@ -745,8 +843,6 @@ export const webviewHtml = `<!DOCTYPE html>
       map.setView([lat, lng], 19);
       mapAutoCentered = true;
     }
-    var el = document.getElementById('dbg-gpsacc');
-    if (el) el.textContent = myPos.acc != null ? myPos.acc.toFixed(1) : '—';
   }
 
   // ===== Stillness pill =====
@@ -849,6 +945,7 @@ export const webviewHtml = `<!DOCTYPE html>
   };
 
   window.centerMap = function() {
+    if (!mapAvailable) { snack('Carte indisponible'); return; }
     if (myPos) map.setView([myPos.lat, myPos.lng], 19);
     else if (beaconPos) map.setView([beaconPos.lat, beaconPos.lng], 19);
   };
@@ -856,9 +953,10 @@ export const webviewHtml = `<!DOCTYPE html>
   window.clearMeasures = function() {
     measures = []; rssiHistory = []; beaconPos = null; lastBearing = null;
     resetKalman();
-    measureLayer.clearLayers(); lineLayer.clearLayers();
-    if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
-    if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
+    if (measureLayer) measureLayer.clearLayers();
+    if (lineLayer) lineLayer.clearLayers();
+    if (markerBeacon) { try { markerBeacon.remove(); } catch(e){} markerBeacon = null; }
+    if (uncertaintyCircle) { try { uncertaintyCircle.remove(); } catch(e){} uncertaintyCircle = null; }
     clearAreaCircle();
     document.getElementById('measures-count').textContent = '0 mesures';
     document.getElementById('dist-val').textContent = '—';
@@ -909,12 +1007,18 @@ export const webviewHtml = `<!DOCTYPE html>
     try {
       var msg = JSON.parse(raw);
       switch (msg.type) {
-        case 'rssi':       handleRSSI(msg.rssi, msg.name); break;
-        case 'gps':        handleGPS(msg.lat, msg.lng, msg.acc); break;
-        case 'heading':    deviceHeading = msg.heading; break;
-        case 'still':      isStill = !!msg.isStill;
+        case 'rssi':       bumpRx('rssi'); handleRSSI(msg.rssi, msg.name); break;
+        case 'gps':        bumpRx('gps'); handleGPS(msg.lat, msg.lng, msg.acc); break;
+        case 'heading':    bumpRx('hdg'); deviceHeading = msg.heading; break;
+        case 'still':      bumpRx('still');
+                           isStill = !!msg.isStill;
                            stillSinceMs = isStill ? Date.now() : 0;
+                           var sEl = document.getElementById('dbg-still'); if (sEl) sEl.textContent = isStill ? 'OUI' : 'non';
+                           var vEl = document.getElementById('dbg-var'); if (vEl && typeof msg.variance === 'number') vEl.textContent = msg.variance.toFixed(4);
                            updateMotionPill();
+                           break;
+        case 'sensors':    if (msg.accel) { var ae = document.getElementById('dbg-accel'); if (ae) { ae.textContent = msg.accel; ae.className = msg.accel === 'ok' ? 'dbg-ok' : 'dbg-warn'; } }
+                           if (msg.haptic) { var he = document.getElementById('dbg-haptic'); if (he) { he.textContent = msg.haptic; he.className = msg.haptic === 'ok' ? 'dbg-ok' : 'dbg-warn'; } }
                            break;
         case 'scanState':  scanning = msg.scanning; updateScanBtn();
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arr\xEAt\xE9', msg.scanning ? 'active' : '');
@@ -946,9 +1050,16 @@ export const webviewHtml = `<!DOCTYPE html>
   document.addEventListener('message', function(e){ onMessage(e.data); });
   window.addEventListener('message', function(e){ onMessage(e.data); });
 
-  applyCfgToForm();
+  try { applyCfgToForm(); bootStep('form'); } catch(e) { bootErr('applyCfgToForm: ' + e.message); bootStep('form-err'); }
   setStatus('Pr\xEAt \xB7 appuyez sur Scanner', '');
   postRN({ type: 'ready', uuid: cfg.uuid });
+  bootStep('ready');
+  // Cache la debug-bar de boot apres 8s si tout est OK (les classes 'show'
+  // ou 'show-error' la maintiennent visible si l'utilisateur l'a activee ou
+  // si une erreur est survenue).
+  setTimeout(function() {
+    try { document.getElementById('debug-bar').classList.remove('show-boot'); } catch(e){}
+  }, 8000);
 })();
 </script>
 </body>
