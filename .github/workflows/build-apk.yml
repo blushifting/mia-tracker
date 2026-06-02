@@ -42,6 +42,22 @@ jobs:
       - name: Install npm dependencies
         run: npm install
 
+      - name: Lint webview HTML/JS syntax
+        run: |
+          node -e "
+            const { webviewHtml } = require('./webviewHtml.ts');
+            const scripts = [...webviewHtml.matchAll(/<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+            let bad = 0;
+            scripts.forEach((s, i) => {
+              try { new Function(s); console.log('webview script #'+i+' OK'); }
+              catch (e) {
+                console.error('webview script #'+i+' SYNTAX ERROR:', e.message);
+                bad++;
+              }
+            });
+            if (bad > 0) process.exit(1);
+          "
+
       - name: Expo prebuild (generate android/)
         run: npx expo prebuild --platform android --no-install --clean
         env:

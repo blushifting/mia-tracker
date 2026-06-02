@@ -577,7 +577,7 @@ export const webviewHtml = `<!DOCTYPE html>
       var hint;
       if (unique.length < 3) hint = 'D\xE9place-toi pour collecter plus de mesures…';
       else if (bm.spread < MIN_BASELINE_M) hint = 'Marche de quelques m\xE8tres pour trianguler…';
-      else hint = 'Contourne la zone pour \xE9largir l\'angle…';
+      else hint = 'Contourne la zone pour \xE9largir l\\'angle…';
       document.getElementById('measures-count').textContent = measures.length + ' mesures \xB7 ' + hint;
       // bearing : indisponible tant qu'on n'a pas une position triangul\xE9e
       updateDebugBaseline(dbgBsl, dbgAng, dbgRms);
@@ -751,7 +751,7 @@ export const webviewHtml = `<!DOCTYPE html>
     } else if (deltaDbm < -HOT_COLD_HYST_DBM) {
       arrow.textContent = '\u{2744}';
       arrow.style.color = 'var(--cold)';
-      text.textContent = 'Tu t\'\xE9loignes';
+      text.textContent = 'Tu t\\'\xE9loignes';
       text.style.color = 'var(--cold)';
       newState = 'cold';
     } else {
@@ -865,7 +865,7 @@ export const webviewHtml = `<!DOCTYPE html>
   // Workflow : 3s de countdown -> 10s de mesure -> moyenne du Kalman -> ecrit cfg.txPower
   window.startCalibration = function() {
     if (calib) return;
-    if (!scanning) { snack('Lance d\'abord le scan pour calibrer'); return; }
+    if (!scanning) { snack('Lance d\\'abord le scan pour calibrer'); return; }
     closeConfig();
     calib = { phase: 'countdown', startMs: Date.now(), samples: [], timer: null };
     document.getElementById('calib-overlay').classList.add('open');
