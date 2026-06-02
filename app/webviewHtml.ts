@@ -42,12 +42,12 @@ export const webviewHtml = `<!DOCTYPE html>
   .compass-tick{position:absolute;width:2px;height:8px;background:var(--border);top:2px;left:calc(50% - 1px);transform-origin:1px 24px;}
   #compass-arrow{position:absolute;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:22px solid var(--beacon);top:50%;left:50%;transform:translate(-50%,-50%) rotate(0deg);transform-origin:50% 100%;filter:drop-shadow(0 0 4px var(--beacon));transition:transform .6s ease;}
   #compass-center{position:absolute;width:8px;height:8px;border-radius:50%;background:var(--text);top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;}
-  #info-col{flex:1;display:flex;flex-direction:column;gap:4px;}
-  .info-row{display:flex;justify-content:space-between;align-items:baseline;}
-  .info-lbl{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
-  .info-val{font-family:'Share Tech Mono',monospace;font-size:.95rem;}
+  #info-col{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0;}
+  .info-row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;min-width:0;}
+  .info-lbl{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;white-space:nowrap;flex-shrink:0;}
+  .info-val{font-family:'Share Tech Mono',monospace;font-size:.95rem;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
   #dist-val{color:var(--beacon);font-size:1.1rem;font-weight:600;}
-  #measures-count{font-size:.7rem;color:var(--muted);font-family:'Share Tech Mono',monospace;}
+  #measures-count{font-size:.7rem;color:var(--muted);font-family:'Share Tech Mono',monospace;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
   #controls{display:flex;gap:8px;padding:10px 14px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
   .btn{flex:1;padding:11px 8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-family:'Oxanium',sans-serif;font-size:.82rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;border-radius:var(--radius);cursor:pointer;transition:background .15s,border-color .15s,color .15s;}
   .btn:active{background:var(--border);}
@@ -55,7 +55,7 @@ export const webviewHtml = `<!DOCTYPE html>
   .btn.primary:active{background:rgba(57,211,83,.25);}
   .btn.danger{background:rgba(248,81,73,.1);border-color:var(--danger);color:var(--danger);}
   .btn.warn{background:rgba(240,180,41,.1);border-color:var(--warn);color:var(--warn);}
-  #config-panel{position:fixed;inset:0;background:rgba(13,17,23,.96);z-index:1000;display:none;flex-direction:column;padding:24px 20px;gap:18px;overflow-y:auto;}
+  #config-panel{position:fixed;inset:0;background:var(--bg);z-index:2000;display:none;flex-direction:column;padding:24px 20px;gap:18px;overflow-y:auto;}
   #config-panel.open{display:flex;}
   #config-panel h2{font-size:1rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--accent);}
   .field{display:flex;flex-direction:column;gap:6px;}
@@ -87,7 +87,7 @@ export const webviewHtml = `<!DOCTYPE html>
   #motion-pill.show{display:inline-flex;}
   #motion-pill.moving{color:var(--accent);border-color:var(--accent);}
   #motion-pill.still{color:var(--warn);border-color:var(--warn);}
-  #calib-overlay{position:fixed;inset:0;background:rgba(13,17,23,.94);z-index:2000;display:none;flex-direction:column;align-items:center;justify-content:center;padding:32px;gap:20px;text-align:center;}
+  #calib-overlay{position:fixed;inset:0;background:var(--bg);z-index:3000;display:none;flex-direction:column;align-items:center;justify-content:center;padding:32px;gap:20px;text-align:center;}
   #calib-overlay.open{display:flex;}
   #calib-title{font-size:1.05rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);}
   #calib-msg{font-size:.9rem;color:var(--text);max-width:320px;line-height:1.5;}
@@ -132,6 +132,14 @@ export const webviewHtml = `<!DOCTYPE html>
   <div class="field row-field">
     <label>Gel quand t\xE9l\xE9phone immobile</label>
     <div id="cfg-stillgate-switch" class="switch" onclick="toggleStillGate()"></div>
+  </div>
+  <div class="field row-field">
+    <label>Trajectoire estim\xE9e de Mia</label>
+    <div id="cfg-trail-switch" class="switch" onclick="toggleBeaconTrail()"></div>
+  </div>
+  <div class="field row-field">
+    <label>Afficher mes points de mesure</label>
+    <div id="cfg-mymeas-switch" class="switch" onclick="toggleMyMeasures()"></div>
   </div>
   <div class="field row-field">
     <label>Afficher la barre de debug</label>
@@ -200,7 +208,7 @@ export const webviewHtml = `<!DOCTYPE html>
     <div id="info-col">
       <div class="info-row"><span class="info-lbl">Distance estim\xE9e</span><span class="info-val" id="dist-val">—</span></div>
       <div class="info-row"><span class="info-lbl">Confiance</span><span class="info-val" id="conf-val" style="color:var(--muted)">—</span></div>
-      <div class="info-row"><span class="info-lbl">Mesures</span><span id="measures-count">0 mesures</span></div>
+      <div class="info-row"><span class="info-lbl">Mesures</span><span id="measures-count">0</span></div>
     </div>
   </div>
   <div id="controls">
@@ -263,7 +271,9 @@ export const webviewHtml = `<!DOCTYPE html>
     txPower: -40, n: 2.5, name: 'Mia',
     showDebug: false,
     haptic: true,
-    stillGate: true
+    stillGate: true,
+    showMyMeasures: false,  // points GPS des mesures RSSI (utile en debug, off par defaut)
+    showBeaconTrail: true   // trajectoire estimee de Mia
   };
   try {
     var saved = localStorage.getItem('miatracker_cfg');
@@ -276,11 +286,12 @@ export const webviewHtml = `<!DOCTYPE html>
 
   // ===== Tuning constants =====
   // RSSI vu en pratique : 10 dBm de variance statique observ\xE9e.
-  // Kalman 1D : variance mesure ~25 (sigma=5), variance process ~0.5.
-  var K_R = 25.0;           // measurement noise variance
-  var K_Q = 0.5;            // process noise variance
+  // Kalman 1D : on garde un R \xE9lev\xE9 (mesures bruit\xE9es) mais on remonte Q
+  // pour rester reactif aux vrais changements. Time constant ~ sqrt(R/Q) ~= 3 samples.
+  var K_R = 15.0;           // measurement noise variance (etait 25, baisse pour reactivite)
+  var K_Q = 2.0;            // process noise variance (etait 0.5, monte pour reactivite)
   var RSSI_JUMP_DBM = 15;   // saut max accept\xE9 entre 2 samples cons\xE9cutifs (sinon outlier)
-  var HOT_COLD_WINDOW_MS = 8000;  // fen\xEAtre pour la pente RSSI
+  var HOT_COLD_WINDOW_MS = 5000;  // fen\xEAtre pour la pente RSSI (etait 8s)
   var HOT_COLD_HYST_DBM = 4;       // hyst\xE9r\xE9sis : sous ce delta, on dit "stable"
   var GPS_ACC_MAX_M = 25;          // au-del\xE0, pond\xE9ration GPS quasi-nulle
   var MIN_BASELINE_M = 5;          // spread spatial minimum pour publier une position triangul\xE9e
@@ -288,6 +299,8 @@ export const webviewHtml = `<!DOCTYPE html>
   var MEASURE_WINDOW_MS = 30000;   // fen\xEAtre temporelle des mesures retenues
   var HAPTIC_TICK_MS = 1400;       // p\xE9riode minimum entre 2 vibrations
   var CALIB_DURATION_MS = 10000;   // dur\xE9e de la mesure de calibration
+  var DIST_DISPLAY_ALPHA = 0.25;   // EMA pour lisser la distance affichee
+  var BEACON_TRAIL_MAX = 30;       // nb max de positions estimees gardees pour la trajectoire
 
   function postRN(msg) {
     if (window.ReactNativeWebView) {
@@ -304,7 +317,11 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-debug-switch').classList.toggle('on', !!cfg.showDebug);
     document.getElementById('cfg-haptic-switch').classList.toggle('on', !!cfg.haptic);
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', !!cfg.stillGate);
+    document.getElementById('cfg-trail-switch').classList.toggle('on', !!cfg.showBeaconTrail);
+    document.getElementById('cfg-mymeas-switch').classList.toggle('on', !!cfg.showMyMeasures);
     applyDebugVisibility();
+    applyMyMeasuresVisibility();
+    applyBeaconTrailVisibility();
   }
 
   function applyDebugVisibility() {
@@ -328,6 +345,38 @@ export const webviewHtml = `<!DOCTYPE html>
     cfg.stillGate = !cfg.stillGate;
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', cfg.stillGate);
   };
+
+  window.toggleBeaconTrail = function() {
+    cfg.showBeaconTrail = !cfg.showBeaconTrail;
+    document.getElementById('cfg-trail-switch').classList.toggle('on', cfg.showBeaconTrail);
+    applyBeaconTrailVisibility();
+  };
+
+  window.toggleMyMeasures = function() {
+    cfg.showMyMeasures = !cfg.showMyMeasures;
+    document.getElementById('cfg-mymeas-switch').classList.toggle('on', cfg.showMyMeasures);
+    applyMyMeasuresVisibility();
+  };
+
+  // Affiche / cache le calque des points GPS de mesure
+  function applyMyMeasuresVisibility() {
+    if (!mapAvailable || !measureLayer) return;
+    if (cfg.showMyMeasures) {
+      if (!map.hasLayer(measureLayer)) measureLayer.addTo(map);
+    } else {
+      if (map.hasLayer(measureLayer)) map.removeLayer(measureLayer);
+    }
+  }
+
+  // Affiche / cache le calque de trajectoire estimee de Mia
+  function applyBeaconTrailVisibility() {
+    if (!mapAvailable || !beaconTrailLayer) return;
+    if (cfg.showBeaconTrail) {
+      if (!map.hasLayer(beaconTrailLayer)) beaconTrailLayer.addTo(map);
+    } else {
+      if (map.hasLayer(beaconTrailLayer)) map.removeLayer(beaconTrailLayer);
+    }
+  }
 
   window.openConfig = function() { document.getElementById('config-panel').classList.add('open'); };
   window.closeConfig = function() { document.getElementById('config-panel').classList.remove('open'); };
@@ -364,8 +413,9 @@ export const webviewHtml = `<!DOCTYPE html>
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 22, subdomains: 'abcd' }).addTo(map);
     L.control.attribution({ prefix: false, position: 'bottomleft' }).addAttribution('\xA9 OpenStreetMap \xB7 CartoDB').addTo(map);
     map.setView([48.85, 2.35], 18);
-    measureLayer = L.layerGroup().addTo(map);
+    measureLayer = L.layerGroup(); // pas addTo(map) par defaut, controle par toggle
     lineLayer = L.layerGroup().addTo(map);
+    beaconTrailLayer = L.layerGroup().addTo(map);
     mapAvailable = true;
     bootStep('map');
   } catch(e) {
@@ -407,6 +457,21 @@ export const webviewHtml = `<!DOCTYPE html>
 
   // Calibration state
   var calib = null; // { phase: 'countdown'|'recording'|'done', startMs, samples: [], timer }
+
+  // Distance affichee : EMA pour lisser visuellement (RSSI fluctue tout seul,
+  // afficher cette fluctuation est inutile et stressant a l'utilisation).
+  var distDisplay = null;
+  function updateDistDisplay(rawDist) {
+    if (distDisplay == null) distDisplay = rawDist;
+    else distDisplay = DIST_DISPLAY_ALPHA * rawDist + (1 - DIST_DISPLAY_ALPHA) * distDisplay;
+    var el = document.getElementById('dist-val');
+    if (el) el.textContent = distDisplay < 1000 ? distDisplay.toFixed(1) + ' m' : '>1 km';
+  }
+
+  // Historique des positions estimees du beacon (trajectoire Mia)
+  var beaconHistory = [];  // [{lat, lng, t, conf}]
+  var beaconTrailLayer = null;
+  var beaconTrailLine = null;
 
   // RX counters
   var rx = { rssi: 0, gps: 0, still: 0, hdg: 0 };
@@ -572,13 +637,13 @@ export const webviewHtml = `<!DOCTYPE html>
       // rayon = distance RSSI brute + marge GPS (1.5x pour incertitude propag\xE9e)
       var radius = Math.max(2, distFromRSSI * 1.5);
       placeAreaCircle(myPos.lat, myPos.lng, radius);
-      document.getElementById('dist-val').textContent = '~' + distFromRSSI.toFixed(1) + ' m';
+      updateDistDisplay(distFromRSSI);
       document.getElementById('conf-val').innerHTML = '\u{1F534} faible <span style="color:var(--muted);font-size:.7rem">(baseline ' + dbgBsl + 'm / ' + dbgAng + '\xB0)</span>';
       var hint;
       if (unique.length < 3) hint = 'D\xE9place-toi pour collecter plus de mesures…';
       else if (bm.spread < MIN_BASELINE_M) hint = 'Marche de quelques m\xE8tres pour trianguler…';
       else hint = 'Contourne la zone pour \xE9largir l\\'angle…';
-      document.getElementById('measures-count').textContent = measures.length + ' mesures \xB7 ' + hint;
+      document.getElementById('measures-count').textContent = measures.length + ' \xB7 ' + hint;
       // bearing : indisponible tant qu'on n'a pas une position triangul\xE9e
       updateDebugBaseline(dbgBsl, dbgAng, dbgRms);
       return;
@@ -607,10 +672,10 @@ export const webviewHtml = `<!DOCTYPE html>
     var bearing = getBearing(myPos.lat, myPos.lng, nls.lat, nls.lng);
     setCompassBearing(bearing);
     var d = getDistance(myPos.lat, myPos.lng, nls.lat, nls.lng);
-    document.getElementById('dist-val').textContent = d < 1000 ? d.toFixed(1) + ' m' : (d/1000).toFixed(2) + ' km';
+    updateDistDisplay(d);
     var confLabel = conf > 65 ? '\u{1F7E2} \xE9lev\xE9e' : conf > 35 ? '\u{1F7E1} moyenne' : '\u{1F534} faible';
     document.getElementById('conf-val').innerHTML = confLabel + ' <span style="color:var(--muted);font-size:.7rem">(±' + Math.round(nls.rms) + 'm)</span>';
-    document.getElementById('measures-count').textContent = measures.length + ' mesures \xB7 ' + method;
+    document.getElementById('measures-count').textContent = measures.length + ' \xB7 ' + method;
     updateDebugBaseline(dbgBsl, dbgAng, dbgRms);
   }
 
@@ -623,6 +688,19 @@ export const webviewHtml = `<!DOCTYPE html>
 
   function placeBeaconMarker(lat, lng, rms, conf, method) {
     beaconPos = { lat: lat, lng: lng };
+    // historique pour la trajectoire estimee : on n'ajoute que des points
+    // suffisamment espaces (>1 m) pour eviter de saturer avec des positions
+    // quasi-identiques quand Mia est statique.
+    var addToHistory = true;
+    if (beaconHistory.length > 0) {
+      var last = beaconHistory[beaconHistory.length - 1];
+      if (getDistance(last.lat, last.lng, lat, lng) < 1.0) addToHistory = false;
+    }
+    if (addToHistory) {
+      beaconHistory.push({ lat: lat, lng: lng, t: Date.now(), conf: conf });
+      if (beaconHistory.length > BEACON_TRAIL_MAX) beaconHistory.shift();
+      redrawBeaconTrail();
+    }
     if (!mapAvailable) return;
     lineLayer.clearLayers();
     if (!markerBeacon) {
@@ -641,6 +719,35 @@ export const webviewHtml = `<!DOCTYPE html>
     }).addTo(lineLayer);
     if (myPos) {
       L.polyline([[myPos.lat, myPos.lng],[lat, lng]], { color: '#58a6ff', weight: 1.5, opacity: 0.5, dashArray: '6,4' }).addTo(lineLayer);
+    }
+  }
+
+  // Dessine la trajectoire estimee de Mia : polyline reliant les positions
+  // historiques + petits cercles a chaque position. Les positions recentes
+  // sont plus opaques, les vieilles fade.
+  function redrawBeaconTrail() {
+    if (!mapAvailable || !beaconTrailLayer) return;
+    beaconTrailLayer.clearLayers();
+    if (beaconHistory.length < 1) return;
+    var now = Date.now();
+    var pts = beaconHistory.map(function(p){ return [p.lat, p.lng]; });
+    if (pts.length >= 2) {
+      L.polyline(pts, { color: 'var(--beacon)' === 'var(--beacon)' ? '#58a6ff' : '#58a6ff', weight: 2.5, opacity: 0.55, dashArray: '2,5' }).addTo(beaconTrailLayer);
+    }
+    // age-fade circles ; le marker beacon principal s'occupe deja du dernier point
+    for (var i = 0; i < beaconHistory.length - 1; i++) {
+      var p = beaconHistory[i];
+      var ageSec = (now - p.t) / 1000;
+      var op = Math.max(0.15, 1.0 - ageSec / 180); // 3 min pour fade complet
+      var icon = L.divIcon({
+        className: '',
+        html: '<div style="width:8px;height:8px;border-radius:50%;background:#58a6ff;border:1px solid #fff;box-shadow:0 0 4px #58a6ff;opacity:' + op.toFixed(2) + '"></div>',
+        iconSize: [8,8], iconAnchor: [4,4]
+      });
+      var ageLabel = ageSec < 60 ? Math.round(ageSec) + 's' : Math.round(ageSec/60) + 'min';
+      L.marker([p.lat, p.lng], { icon: icon })
+        .bindTooltip('Il y a ' + ageLabel, { sticky: true })
+        .addTo(beaconTrailLayer);
     }
   }
 
@@ -806,7 +913,7 @@ export const webviewHtml = `<!DOCTYPE html>
     updateHotCold();
 
     var dist = rssiToDistance(smoothed);
-    document.getElementById('dist-val').textContent = dist < 1000 ? dist.toFixed(1) + ' m' : '>1 km';
+    updateDistDisplay(dist);
 
     // Si on est en calibration, alimente les samples (qu'on soit avec ou sans GPS).
     if (calib && calib.phase === 'recording' && keepForFusion) {
@@ -917,9 +1024,12 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('calib-overlay').classList.remove('open');
     calib = null;
     snack('TxPower calibr\xE9 \xE0 ' + cfg.txPower + ' dBm (' + cfg.txPower + ' dBm \xE0 1 m)');
-    // Repart sur des bases propres : les anciennes mesures \xE9taient calcul\xE9es
-    // avec l'ancien txPower, donc leur dist embarqu\xE9e est obsol\xE8te.
-    measures = []; measureLayer.clearLayers(); lineLayer.clearLayers();
+    // Repart sur des bases propres : les anciennes mesures etaient calculees
+    // avec l'ancien txPower, donc leur dist embarquee est obsolete.
+    measures = []; beaconHistory = []; distDisplay = null;
+    if (measureLayer) measureLayer.clearLayers();
+    if (lineLayer) lineLayer.clearLayers();
+    if (beaconTrailLayer) beaconTrailLayer.clearLayers();
     if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
     if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
     clearAreaCircle();
@@ -952,13 +1062,16 @@ export const webviewHtml = `<!DOCTYPE html>
 
   window.clearMeasures = function() {
     measures = []; rssiHistory = []; beaconPos = null; lastBearing = null;
+    beaconHistory = [];
     resetKalman();
     if (measureLayer) measureLayer.clearLayers();
     if (lineLayer) lineLayer.clearLayers();
+    if (beaconTrailLayer) beaconTrailLayer.clearLayers();
     if (markerBeacon) { try { markerBeacon.remove(); } catch(e){} markerBeacon = null; }
     if (uncertaintyCircle) { try { uncertaintyCircle.remove(); } catch(e){} uncertaintyCircle = null; }
     clearAreaCircle();
-    document.getElementById('measures-count').textContent = '0 mesures';
+    distDisplay = null;
+    document.getElementById('measures-count').textContent = '0';
     document.getElementById('dist-val').textContent = '—';
     document.getElementById('conf-val').textContent = '—';
     document.getElementById('rssi-val').textContent = '— dBm';
