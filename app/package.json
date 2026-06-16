@@ -8,7 +8,7 @@
     "prebuild": "expo prebuild --platform android",
     "ios": "expo run:ios",
     "test": "node algo.test.mjs",
-    "check": "tsc --noEmit && node check-webview.mjs && node algo.test.mjs"
+    "check": "tsc --noEmit && node check-webview.cjs && node algo.test.mjs"
   },
   "dependencies": {
     "expo": "~52.0.46",

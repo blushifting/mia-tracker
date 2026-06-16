@@ -1,4 +1,4 @@
-import { algoSource } from './algoSource';
+import { algoSource } from './algoSource.js';
 
 export const webviewHtml = `<!DOCTYPE html>
 <html lang="fr">
