@@ -6,6 +6,7 @@ import {
   StyleSheet,
   StatusBar as RNStatusBar,
   Alert,
+  Share,
 } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import * as Location from 'expo-location';
@@ -255,6 +256,10 @@ export default function App() {
         break;
       case 'haptic':
         triggerHaptic(typeof msg.intensity === 'number' ? msg.intensity : 1);
+        break;
+      case 'exportSession':
+        // Partage le JSON de session (mesures brutes) via la feuille de partage Android.
+        Share.share({ message: String(msg.payload || '') }).catch(() => {});
         break;
       case 'webview-error':
         // Erreur captee par window.onerror cote webview. Log dans logcat pour

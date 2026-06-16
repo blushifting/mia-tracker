@@ -1,3 +1,5 @@
+import { algoSource } from './algoSource';
+
 export const webviewHtml = `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -150,6 +152,20 @@ export const webviewHtml = `<!DOCTYPE html>
     <button class="btn warn" onclick="startCalibration()" style="margin-top:4px;">\u{1F4CF} Calibrer \xE0 1 m</button>
     <div class="hint">Pose le t\xE9l\xE9phone \xE0 exactement 1 m de Mia, immobile. Mesure de 10 s pour auto-calibrer la TxPower r\xE9elle.</div>
   </div>
+  <div class="field row-field">
+    <label>Filtre particulaire (Mia mobile)</label>
+    <div id="cfg-pf-switch" class="switch" onclick="togglePF()"></div>
+  </div>
+  <div class="field">
+    <label>Stabilit\xE9 de la position GPS</label>
+    <input id="cfg-gpsA" type="number" value="0.12" step="0.01" min="0.02" max="1">
+    <div class="hint">Plus bas = position plus stable (moins de d\xE9rive \xE0 l'arr\xEAt). Plus haut = suit mieux les d\xE9placements rapides.</div>
+  </div>
+  <div class="field">
+    <label>Session (debug / r\xE9glage sans rebuild)</label>
+    <button class="btn" onclick="exportSession()" style="margin-top:4px;">Exporter la session (JSON)</button>
+    <div class="hint">Partage toutes les mesures brutes enregistr\xE9es pendant le scan.</div>
+  </div>
   <div class="config-actions">
     <button class="btn primary" onclick="saveConfig()">✓ Enregistrer</button>
     <button class="btn" onclick="closeConfig()">Annuler</button>
@@ -220,6 +236,7 @@ export const webviewHtml = `<!DOCTYPE html>
 </div>
 <div id="snack"></div>
 
+<script>${algoSource}</script>
 <script>
 // ===== Global error handlers (avant l'IIFE pour capter ses propres crashes) =====
 (function setupGlobalErrors(){
@@ -273,7 +290,10 @@ export const webviewHtml = `<!DOCTYPE html>
     haptic: true,
     stillGate: true,
     showMyMeasures: false,  // points GPS des mesures RSSI (utile en debug, off par defaut)
-    showBeaconTrail: true   // trajectoire estimee de Mia
+    showBeaconTrail: true,  // trajectoire estimee de Mia
+    gpsSigmaA: 0.12,        // bruit d'acceleration du Kalman GPS (bas = position plus stable)
+    particles: 600,         // taille du nuage du filtre particulaire (position beacon)
+    usePF: true             // utiliser le filtre particulaire (sinon trilateration seule)
   };
   try {
     var saved = localStorage.getItem('miatracker_cfg');
@@ -319,6 +339,8 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', !!cfg.stillGate);
     document.getElementById('cfg-trail-switch').classList.toggle('on', !!cfg.showBeaconTrail);
     document.getElementById('cfg-mymeas-switch').classList.toggle('on', !!cfg.showMyMeasures);
+    document.getElementById('cfg-gpsA').value = cfg.gpsSigmaA;
+    document.getElementById('cfg-pf-switch').classList.toggle('on', !!cfg.usePF);
     applyDebugVisibility();
     applyMyMeasuresVisibility();
     applyBeaconTrailVisibility();
@@ -358,6 +380,11 @@ export const webviewHtml = `<!DOCTYPE html>
     applyMyMeasuresVisibility();
   };
 
+  window.togglePF = function() {
+    cfg.usePF = !cfg.usePF;
+    document.getElementById('cfg-pf-switch').classList.toggle('on', cfg.usePF);
+  };
+
   // Affiche / cache le calque des points GPS de mesure
   function applyMyMeasuresVisibility() {
     if (!mapAvailable || !measureLayer) return;
@@ -385,12 +412,25 @@ export const webviewHtml = `<!DOCTYPE html>
     cfg.txPower = parseFloat(document.getElementById('cfg-txpower').value) || -40;
     cfg.n       = parseFloat(document.getElementById('cfg-n').value) || 2.5;
     cfg.name    = (document.getElementById('cfg-name').value || '').trim() || 'Mia';
-    // showDebug est d\xE9j\xE0 \xE0 jour via toggleDebug()
+    cfg.gpsSigmaA = parseFloat(document.getElementById('cfg-gpsA').value) || 0.12;
+    // showDebug / usePF sont d\xE9j\xE0 \xE0 jour via leurs toggles
     localStorage.setItem('miatracker_cfg', JSON.stringify(cfg));
+    // recr\xE9e les filtres avec les nouveaux param\xE8tres (tuning \xE0 chaud, zero rebuild)
+    if (A) {
+      gpsF = A.createGpsFilter({ sigmaA: cfg.gpsSigmaA, maxAccuracy: GPS_ACC_MAX_M });
+      estimator = cfg.usePF ? A.createEstimator({ numParticles: cfg.particles }) : null;
+      refFrame = null;
+    }
     document.getElementById('header-title').textContent = '\u{1F431} ' + cfg.name;
     postRN({ type: 'config', uuid: cfg.uuid });
     closeConfig();
     snack('Configuration enregistr\xE9e');
+  };
+
+  window.exportSession = function() {
+    var payload = JSON.stringify({ cfg: cfg, events: recorder.events });
+    postRN({ type: 'exportSession', payload: payload });
+    snack('Export de ' + recorder.events.length + ' \xE9v\xE9nements');
   };
 
   // ===== Map =====
@@ -446,6 +486,23 @@ export const webviewHtml = `<!DOCTYPE html>
   var kf = { initialized: false, x: 0, p: 1.0 };
   var lastRawRssi = null;
   var lastRawRssiTime = 0;
+
+  // Module algo testé (injecté via algoSource) : Kalman GPS 2D + filtre particulaire.
+  var A = window.MiaAlgo || null;
+  if (!A) bootErr('MiaAlgo absent');
+  var gpsF = A ? A.createGpsFilter({ sigmaA: cfg.gpsSigmaA, maxAccuracy: GPS_ACC_MAX_M }) : null;
+  var refFrame = null;        // cadre métrique partagé (créé au 1er fix filtré)
+  var estimator = (A && cfg.usePF) ? A.createEstimator({ numParticles: cfg.particles }) : null;
+  var lastPFestimate = 0;
+
+  // Enregistreur de session : journalise les événements bruts (rssi/gps/heading/still)
+  // pour pouvoir les exporter et régler l'algo hors-ligne, sans rebuild.
+  var recorder = {
+    on: false, events: [],
+    start: function () { this.events = [{ type: 'cfg', cfg: JSON.parse(JSON.stringify(cfg)), t: Date.now() }]; this.on = true; },
+    stop: function () { this.on = false; },
+    rec: function (m) { if (this.on) { this.events.push(m); if (this.events.length > 8000) this.events.shift(); } }
+  };
 
   // Stillness gate (vient de l'accelerometre via RN)
   var isStill = false;       // true = telephone immobile
@@ -613,6 +670,17 @@ export const webviewHtml = `<!DOCTYPE html>
     return { lat: lat, lng: lng, rms: rms };
   }
 
+  // Alimente le filtre particulaire avec une mesure (position filtrée + distance RSSI).
+  // sigma combine l'incertitude RSSI->distance et la précision GPS.
+  function feedEstimator(pos, dist) {
+    if (!estimator || !A) return;
+    if (!refFrame) refFrame = A.makeRef(pos.lat, pos.lng);
+    var m = A.toLocal(refFrame, pos.lat, pos.lng);
+    var sigR = A.distanceSigma(dist, Math.sqrt(K_R), cfg.n);
+    var sigma = Math.sqrt(sigR * sigR + (pos.acc || 5) * (pos.acc || 5));
+    estimator.addMeasurement({ x: m.x, y: m.y, dist: dist, sigma: sigma });
+  }
+
   function estimateBeaconPosition() {
     if (!myPos) return;
     var now = Date.now();
@@ -649,32 +717,45 @@ export const webviewHtml = `<!DOCTYPE html>
       return;
     }
 
-    // === Cas 2 : baseline OK, on triangule ===
+    // === Cas 2 : baseline OK, on localise ===
     clearAreaCircle();
-    var nls = trilaterate(unique);
-    if (!nls) {
-      // solveur a \xE9chou\xE9 \xE0 converger : fallback prudent
-      clearBeaconMarker();
-      placeAreaCircle(myPos.lat, myPos.lng, Math.max(2, distFromRSSI * 1.5));
-      updateDebugBaseline(dbgBsl, dbgAng, '—');
-      return;
+
+    var solLat, solLng, solRms, conf, method;
+    // Filtre particulaire (robuste au bruit, cible mobile, incertitude native) si
+    // dispo et assez de mises a jour ; sinon repli sur la trilateration historique.
+    var e = (cfg.usePF && estimator) ? estimator.estimate() : null;
+    if (e && refFrame && e.updates >= 3) {
+      var ll = A.toLatLng(refFrame, e.x, e.y);
+      solLat = ll.lat; solLng = ll.lng; solRms = e.meanRadius;
+      conf = Math.round(e.confidence);
+      method = 'particulaire n=' + unique.length;
+      dbgRms = solRms.toFixed(1);
+    } else {
+      var nls = trilaterate(unique);
+      if (!nls) {
+        // solveur a \xE9chou\xE9 \xE0 converger : fallback prudent
+        clearBeaconMarker();
+        placeAreaCircle(myPos.lat, myPos.lng, Math.max(2, distFromRSSI * 1.5));
+        updateDebugBaseline(dbgBsl, dbgAng, '—');
+        return;
+      }
+      solLat = nls.lat; solLng = nls.lng; solRms = nls.rms;
+      dbgRms = nls.rms.toFixed(1);
+      // confiance : combine nb mesures, baseline, et rms r\xE9siduel
+      var rmsFactor = Math.max(0, 1 - nls.rms / 20); // rms <5m bien, >20m mauvais
+      var baseFactor = Math.min(1, (bm.spread / 15) * (bm.angle / 180));
+      var measFactor = Math.min(1, unique.length / 8);
+      conf = Math.round(100 * (0.5 * rmsFactor + 0.3 * baseFactor + 0.2 * measFactor));
+      method = 'trilat\xE9ration n=' + unique.length;
     }
-    dbgRms = nls.rms.toFixed(1);
 
-    // confiance : combine nb mesures, baseline, et rms r\xE9siduel
-    var rmsFactor = Math.max(0, 1 - nls.rms / 20); // rms <5m bien, >20m mauvais
-    var baseFactor = Math.min(1, (bm.spread / 15) * (bm.angle / 180));
-    var measFactor = Math.min(1, unique.length / 8);
-    var conf = Math.round(100 * (0.5 * rmsFactor + 0.3 * baseFactor + 0.2 * measFactor));
-    var method = 'trilat\xE9ration n=' + unique.length;
-    placeBeaconMarker(nls.lat, nls.lng, nls.rms, conf, method);
-
-    var bearing = getBearing(myPos.lat, myPos.lng, nls.lat, nls.lng);
+    placeBeaconMarker(solLat, solLng, solRms, conf, method);
+    var bearing = getBearing(myPos.lat, myPos.lng, solLat, solLng);
     setCompassBearing(bearing);
-    var d = getDistance(myPos.lat, myPos.lng, nls.lat, nls.lng);
+    var d = getDistance(myPos.lat, myPos.lng, solLat, solLng);
     updateDistDisplay(d);
     var confLabel = conf > 65 ? '\u{1F7E2} \xE9lev\xE9e' : conf > 35 ? '\u{1F7E1} moyenne' : '\u{1F534} faible';
-    document.getElementById('conf-val').innerHTML = confLabel + ' <span style="color:var(--muted);font-size:.7rem">(±' + Math.round(nls.rms) + 'm)</span>';
+    document.getElementById('conf-val').innerHTML = confLabel + ' <span style="color:var(--muted);font-size:.7rem">(±' + Math.round(solRms) + 'm)</span>';
     document.getElementById('measures-count').textContent = measures.length + ' \xB7 ' + method;
     updateDebugBaseline(dbgBsl, dbgAng, dbgRms);
   }
@@ -930,24 +1011,40 @@ export const webviewHtml = `<!DOCTYPE html>
       if (accOK && !stillBlock) {
         measures.push({ lat: myPos.lat, lng: myPos.lng, acc: myPos.acc || 5, rssi: smoothed, dist: dist, t: now });
         addMeasureMarker(myPos.lat, myPos.lng, smoothed, dist);
+        feedEstimator(myPos, dist);
         estimateBeaconPosition();
       }
     }
   }
 
   function handleGPS(lat, lng, acc) {
-    myPos = { lat: lat, lng: lng, acc: (typeof acc === 'number' && acc > 0) ? acc : null };
+    var now = Date.now();
+    var rawAcc = (typeof acc === 'number' && acc > 0) ? acc : null;
+    // GEL : quand l'accéléromètre dit immobile depuis >1s, on FIGE la position
+    // filtrée. C'est ce qui supprime la dérive du point "moi" à l'arrêt — la
+    // cause n°1 d'incertitude ajoutée sur la position du beacon.
+    var frozen = cfg.stillGate && isStill && stillSinceMs > 0 && (now - stillSinceMs) > 1000;
+    if (gpsF && !frozen) {
+      // Kalman GPS 2D : lisse le bruit GPS et amortit la vitesse (anti-dérive).
+      var r = gpsF.push(lat, lng, rawAcc == null ? GPS_ACC_MAX_M : rawAcc, now);
+      if (r) myPos = { lat: r.lat, lng: r.lng, acc: r.accuracy };
+      else if (!myPos) myPos = { lat: lat, lng: lng, acc: rawAcc }; // fix gaté, rien encore
+    } else if (!myPos) {
+      // immobile dès le départ : on prend le brut pour avoir une position
+      myPos = { lat: lat, lng: lng, acc: rawAcc };
+    }
+    // si frozen et myPos déjà connu : on garde myPos tel quel (gel)
     var el = document.getElementById('dbg-gpsacc');
     if (el) el.textContent = myPos.acc != null ? myPos.acc.toFixed(1) : '—';
     if (!mapAvailable) return;
     if (!markerMe) {
-      markerMe = L.marker([lat, lng], { icon: makeIcon('marker-me') })
+      markerMe = L.marker([myPos.lat, myPos.lng], { icon: makeIcon('marker-me') })
         .bindTooltip('Vous', { permanent: false }).addTo(map);
     } else {
-      markerMe.setLatLng([lat, lng]);
+      markerMe.setLatLng([myPos.lat, myPos.lng]);
     }
     if (!mapAutoCentered) {
-      map.setView([lat, lng], 19);
+      map.setView([myPos.lat, myPos.lng], 19);
       mapAutoCentered = true;
     }
   }
@@ -1027,6 +1124,7 @@ export const webviewHtml = `<!DOCTYPE html>
     // Repart sur des bases propres : les anciennes mesures etaient calculees
     // avec l'ancien txPower, donc leur dist embarquee est obsolete.
     measures = []; beaconHistory = []; distDisplay = null;
+    if (estimator) estimator.reset(); refFrame = null;
     if (measureLayer) measureLayer.clearLayers();
     if (lineLayer) lineLayer.clearLayers();
     if (beaconTrailLayer) beaconTrailLayer.clearLayers();
@@ -1064,6 +1162,7 @@ export const webviewHtml = `<!DOCTYPE html>
     measures = []; rssiHistory = []; beaconPos = null; lastBearing = null;
     beaconHistory = [];
     resetKalman();
+    if (gpsF) gpsF.reset(); if (estimator) estimator.reset(); refFrame = null;
     if (measureLayer) measureLayer.clearLayers();
     if (lineLayer) lineLayer.clearLayers();
     if (beaconTrailLayer) beaconTrailLayer.clearLayers();
@@ -1119,6 +1218,7 @@ export const webviewHtml = `<!DOCTYPE html>
   function onMessage(raw) {
     try {
       var msg = JSON.parse(raw);
+      if (msg.type === 'rssi' || msg.type === 'gps' || msg.type === 'heading' || msg.type === 'still') recorder.rec(msg);
       switch (msg.type) {
         case 'rssi':       bumpRx('rssi'); handleRSSI(msg.rssi, msg.name); break;
         case 'gps':        bumpRx('gps'); handleGPS(msg.lat, msg.lng, msg.acc); break;
@@ -1133,7 +1233,9 @@ export const webviewHtml = `<!DOCTYPE html>
         case 'sensors':    if (msg.accel) { var ae = document.getElementById('dbg-accel'); if (ae) { ae.textContent = msg.accel; ae.className = msg.accel === 'ok' ? 'dbg-ok' : 'dbg-warn'; } }
                            if (msg.haptic) { var he = document.getElementById('dbg-haptic'); if (he) { he.textContent = msg.haptic; he.className = msg.haptic === 'ok' ? 'dbg-ok' : 'dbg-warn'; } }
                            break;
-        case 'scanState':  scanning = msg.scanning; updateScanBtn();
+        case 'scanState':  var wasScanningSS = scanning; scanning = msg.scanning; updateScanBtn();
+                           if (scanning && !wasScanningSS) recorder.start();
+                           if (!scanning) recorder.stop();
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arr\xEAt\xE9', msg.scanning ? 'active' : '');
                            applyDebugVisibility();
                            if (msg.scanning) {
