@@ -100,6 +100,10 @@ export const webviewHtml = `<!DOCTYPE html>
   #calib-actions{display:flex;gap:10px;}
   .leaflet-tooltip{background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'Share Tech Mono',monospace;font-size:.7rem;}
   .marker-me{width:14px;height:14px;background:var(--accent);border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px var(--accent);}
+  .me-wrap{position:relative;width:40px;height:40px;}
+  .me-wrap .marker-me{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);}
+  .me-cone{position:absolute;top:0;left:0;width:40px;height:40px;transform-origin:50% 50%;transform:rotate(0deg);transition:transform .3s ease;pointer-events:none;}
+  .me-cone::before{content:'';position:absolute;top:1px;left:50%;margin-left:-8px;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:15px solid var(--accent);opacity:.55;filter:drop-shadow(0 0 3px var(--accent));}
   .marker-beacon{width:18px;height:18px;background:var(--beacon);border:2px solid #fff;border-radius:50%;box-shadow:0 0 12px var(--beacon);}
   .marker-meas{width:8px;height:8px;border-radius:50%;border:1px solid var(--accent);}
 </style>
@@ -134,6 +138,10 @@ export const webviewHtml = `<!DOCTYPE html>
   <div class="field row-field">
     <label>Gel quand t\xE9l\xE9phone immobile</label>
     <div id="cfg-stillgate-switch" class="switch" onclick="toggleStillGate()"></div>
+  </div>
+  <div class="field row-field">
+    <label>Fusion inertielle (acc\xE9l\xE9rom\xE8tre)</label>
+    <div id="cfg-imu-switch" class="switch" onclick="toggleImuPredict()"></div>
   </div>
   <div class="field row-field">
     <label>Trajectoire estim\xE9e de Mia</label>
@@ -289,6 +297,7 @@ export const webviewHtml = `<!DOCTYPE html>
     showDebug: false,
     haptic: true,
     stillGate: true,
+    imuPredict: true,       // fusion inertielle : accelero -> prediction du Kalman GPS
     showMyMeasures: false,  // points GPS des mesures RSSI (utile en debug, off par defaut)
     showBeaconTrail: true,  // trajectoire estimee de Mia
     gpsSigmaA: 0.12,        // bruit d'acceleration du Kalman GPS (bas = position plus stable)
@@ -337,6 +346,7 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-debug-switch').classList.toggle('on', !!cfg.showDebug);
     document.getElementById('cfg-haptic-switch').classList.toggle('on', !!cfg.haptic);
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', !!cfg.stillGate);
+    document.getElementById('cfg-imu-switch').classList.toggle('on', !!cfg.imuPredict);
     document.getElementById('cfg-trail-switch').classList.toggle('on', !!cfg.showBeaconTrail);
     document.getElementById('cfg-mymeas-switch').classList.toggle('on', !!cfg.showMyMeasures);
     document.getElementById('cfg-gpsA').value = cfg.gpsSigmaA;
@@ -366,6 +376,11 @@ export const webviewHtml = `<!DOCTYPE html>
   window.toggleStillGate = function() {
     cfg.stillGate = !cfg.stillGate;
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', cfg.stillGate);
+  };
+
+  window.toggleImuPredict = function() {
+    cfg.imuPredict = !cfg.imuPredict;
+    document.getElementById('cfg-imu-switch').classList.toggle('on', cfg.imuPredict);
   };
 
   window.toggleBeaconTrail = function() {
@@ -456,6 +471,7 @@ export const webviewHtml = `<!DOCTYPE html>
     measureLayer = L.layerGroup(); // pas addTo(map) par defaut, controle par toggle
     lineLayer = L.layerGroup().addTo(map);
     beaconTrailLayer = L.layerGroup().addTo(map);
+    myTrailLayer = L.layerGroup().addTo(map);
     mapAvailable = true;
     bootStep('map');
   } catch(e) {
@@ -470,6 +486,12 @@ export const webviewHtml = `<!DOCTYPE html>
 
   function makeIcon(cls) {
     return L.divIcon({ className:'', html: '<div class="'+cls+'"></div>', iconSize:[14,14], iconAnchor:[7,7] });
+  }
+
+  // Marker "moi" : le point central + un cone d'orientation oriente selon le cap
+  // du telephone (deviceHeading). La carte etant nord-haut, rotate(cap) suffit.
+  function makeMeIcon() {
+    return L.divIcon({ className:'', html: '<div class="me-wrap"><div class="me-cone" id="me-cone"></div><div class="marker-me"></div></div>', iconSize:[40,40], iconAnchor:[20,20] });
   }
 
   // ===== State =====
@@ -526,8 +548,11 @@ export const webviewHtml = `<!DOCTYPE html>
   }
 
   // Historique des positions estimees du beacon (trajectoire Mia)
-  var beaconHistory = [];  // [{lat, lng, t, conf}]
+  var beaconHistory = [];  // [{lat, lng, t}]
   var beaconTrailLayer = null;
+  var myHistory = [];      // [{lat, lng, t}] trajectoire du telephone
+  var myTrailLayer = null;
+  var MY_TRAIL_MAX = 40;   // nb max de points de la trajectoire telephone
   var beaconTrailLine = null;
 
   // RX counters
@@ -772,14 +797,10 @@ export const webviewHtml = `<!DOCTYPE html>
     // historique pour la trajectoire estimee : on n'ajoute que des points
     // suffisamment espaces (>1 m) pour eviter de saturer avec des positions
     // quasi-identiques quand Mia est statique.
-    var addToHistory = true;
-    if (beaconHistory.length > 0) {
-      var last = beaconHistory[beaconHistory.length - 1];
-      if (getDistance(last.lat, last.lng, lat, lng) < 1.0) addToHistory = false;
-    }
-    if (addToHistory) {
-      beaconHistory.push({ lat: lat, lng: lng, t: Date.now(), conf: conf });
-      if (beaconHistory.length > BEACON_TRAIL_MAX) beaconHistory.shift();
+    // Trajectoire estimee de Mia : meme helper "cooldown glissant" que le telephone.
+    // minIntervalMs=0 -> comportement distance-only inchange (pas de point quand
+    // Mia est statique, comme avant).
+    if (pushTrail(beaconHistory, lat, lng, BEACON_TRAIL_MAX, 1.0, 0)) {
       redrawBeaconTrail();
     }
     if (!mapAvailable) return;
@@ -829,6 +850,43 @@ export const webviewHtml = `<!DOCTYPE html>
       L.marker([p.lat, p.lng], { icon: icon })
         .bindTooltip('Il y a ' + ageLabel, { sticky: true })
         .addTo(beaconTrailLayer);
+    }
+  }
+
+  // "Cooldown glissant" partage : ajoute un point a un historique seulement si on
+  // a bouge d'au moins minDist ET qu'il s'est ecoule au moins minIntervalMs depuis
+  // le dernier point. Evite de surcharger la visu. Plafonne a maxPts (FIFO).
+  // minIntervalMs=0 -> pas de throttle temporel (filtre distance seul).
+  function pushTrail(history, lat, lng, maxPts, minDist, minIntervalMs) {
+    var now = Date.now();
+    if (history.length > 0) {
+      var last = history[history.length - 1];
+      if (getDistance(last.lat, last.lng, lat, lng) < minDist) return false;
+      if ((now - last.t) < minIntervalMs) return false;
+    }
+    history.push({ lat: lat, lng: lng, t: now });
+    while (history.length > maxPts) history.shift();
+    return true;
+  }
+
+  // Dessine la trajectoire du telephone (vert) : polyline + points fade par age.
+  function redrawMyTrail() {
+    if (!mapAvailable || !myTrailLayer) return;
+    myTrailLayer.clearLayers();
+    if (myHistory.length < 2) return;
+    var now = Date.now();
+    var pts = myHistory.map(function(p){ return [p.lat, p.lng]; });
+    L.polyline(pts, { color: '#39d353', weight: 2.5, opacity: 0.5, dashArray: '1,5' }).addTo(myTrailLayer);
+    for (var i = 0; i < myHistory.length - 1; i++) {
+      var p = myHistory[i];
+      var ageSec = (now - p.t) / 1000;
+      var op = Math.max(0.12, 1.0 - ageSec / 180);
+      var icon = L.divIcon({
+        className: '',
+        html: '<div style="width:6px;height:6px;border-radius:50%;background:#39d353;opacity:' + op.toFixed(2) + '"></div>',
+        iconSize: [6,6], iconAnchor: [3,3]
+      });
+      L.marker([p.lat, p.lng], { icon: icon }).addTo(myTrailLayer);
     }
   }
 
@@ -884,6 +942,12 @@ export const webviewHtml = `<!DOCTYPE html>
     lastBearing = bearing;
     var angle = (bearing - deviceHeading + 360) % 360;
     document.getElementById('compass-arrow').style.transform = 'translate(-50%,-50%) rotate('+angle+'deg)';
+  }
+
+  // Oriente le cone du marker "moi" selon le cap du telephone (carte nord-haut).
+  function setMeHeading(hdg) {
+    var el = document.getElementById('me-cone');
+    if (el) el.style.transform = 'rotate(' + (((hdg || 0) % 360 + 360) % 360) + 'deg)';
   }
 
   function setStatus(msg, state) {
@@ -1038,11 +1102,14 @@ export const webviewHtml = `<!DOCTYPE html>
     if (el) el.textContent = myPos.acc != null ? myPos.acc.toFixed(1) : '—';
     if (!mapAvailable) return;
     if (!markerMe) {
-      markerMe = L.marker([myPos.lat, myPos.lng], { icon: makeIcon('marker-me') })
+      markerMe = L.marker([myPos.lat, myPos.lng], { icon: makeMeIcon() })
         .bindTooltip('Vous', { permanent: false }).addTo(map);
+      setMeHeading(deviceHeading);
     } else {
       markerMe.setLatLng([myPos.lat, myPos.lng]);
     }
+    // Trajectoire du telephone (cooldown glissant : >=1.5 m ET >=2 s entre points).
+    if (pushTrail(myHistory, myPos.lat, myPos.lng, MY_TRAIL_MAX, 1.5, 2000)) redrawMyTrail();
     if (!mapAutoCentered) {
       map.setView([myPos.lat, myPos.lng], 19);
       mapAutoCentered = true;
@@ -1123,11 +1190,12 @@ export const webviewHtml = `<!DOCTYPE html>
     snack('TxPower calibr\xE9 \xE0 ' + cfg.txPower + ' dBm (' + cfg.txPower + ' dBm \xE0 1 m)');
     // Repart sur des bases propres : les anciennes mesures etaient calculees
     // avec l'ancien txPower, donc leur dist embarquee est obsolete.
-    measures = []; beaconHistory = []; distDisplay = null;
+    measures = []; beaconHistory = []; myHistory = []; distDisplay = null;
     if (estimator) estimator.reset(); refFrame = null;
     if (measureLayer) measureLayer.clearLayers();
     if (lineLayer) lineLayer.clearLayers();
     if (beaconTrailLayer) beaconTrailLayer.clearLayers();
+    if (myTrailLayer) myTrailLayer.clearLayers();
     if (markerBeacon) { markerBeacon.remove(); markerBeacon = null; }
     if (uncertaintyCircle) { uncertaintyCircle.remove(); uncertaintyCircle = null; }
     clearAreaCircle();
@@ -1160,12 +1228,13 @@ export const webviewHtml = `<!DOCTYPE html>
 
   window.clearMeasures = function() {
     measures = []; rssiHistory = []; beaconPos = null; lastBearing = null;
-    beaconHistory = [];
+    beaconHistory = []; myHistory = [];
     resetKalman();
     if (gpsF) gpsF.reset(); if (estimator) estimator.reset(); refFrame = null;
     if (measureLayer) measureLayer.clearLayers();
     if (lineLayer) lineLayer.clearLayers();
     if (beaconTrailLayer) beaconTrailLayer.clearLayers();
+    if (myTrailLayer) myTrailLayer.clearLayers();
     if (markerBeacon) { try { markerBeacon.remove(); } catch(e){} markerBeacon = null; }
     if (uncertaintyCircle) { try { uncertaintyCircle.remove(); } catch(e){} uncertaintyCircle = null; }
     clearAreaCircle();
@@ -1176,6 +1245,7 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('rssi-val').textContent = '— dBm';
     document.getElementById('rssi-fill').style.width = '0%';
     document.getElementById('compass-arrow').style.transform = 'translate(-50%,-50%) rotate(0deg)';
+    setMeHeading(0);
     document.getElementById('hc-arrow').textContent = '—';
     document.getElementById('hc-arrow').style.color = 'var(--neutral)';
     document.getElementById('hc-text').textContent = 'En attente de mesures…';
@@ -1222,7 +1292,24 @@ export const webviewHtml = `<!DOCTYPE html>
       switch (msg.type) {
         case 'rssi':       bumpRx('rssi'); handleRSSI(msg.rssi, msg.name); break;
         case 'gps':        bumpRx('gps'); handleGPS(msg.lat, msg.lng, msg.acc); break;
-        case 'heading':    bumpRx('hdg'); deviceHeading = msg.heading; break;
+        case 'heading':    bumpRx('hdg'); deviceHeading = msg.heading; setMeHeading(deviceHeading); break;
+        case 'accel':
+                           // Fusion inertielle : avance la prediction du Kalman GPS entre 2 fixes.
+                           // Gele si immobile (>1s) comme handleGPS, pour respecter le gel d'immobilite.
+                           if (cfg.imuPredict && gpsF) {
+                             var accFrozen = cfg.stillGate && isStill && stillSinceMs > 0 && (Date.now() - stillSinceMs) > 1000;
+                             if (!accFrozen) {
+                               var pr = gpsF.predict(msg.aE, msg.aN, msg.t);
+                               if (pr) {
+                                 myPos = { lat: pr.lat, lng: pr.lng, acc: pr.accuracy };
+                                 if (mapAvailable && markerMe) {
+                                   markerMe.setLatLng([pr.lat, pr.lng]);
+                                   if (pushTrail(myHistory, pr.lat, pr.lng, MY_TRAIL_MAX, 1.5, 2000)) redrawMyTrail();
+                                 }
+                               }
+                             }
+                           }
+                           break;
         case 'still':      bumpRx('still');
                            isStill = !!msg.isStill;
                            stillSinceMs = isStill ? Date.now() : 0;

@@ -131,6 +131,43 @@ export const algoSource = String.raw`
 
     function idx(r, c) { return r * 4 + c; }
 
+    // Etape de prediction du Kalman CV, avec acceleration optionnelle
+    // (aE,aN en m/s^2, repere monde est/nord) comme entree de commande.
+    // aE=aN=0 -> modele vitesse-constante classique (comportement historique).
+    function predictStep(dt, aE, aN) {
+      aE = aE || 0; aN = aN || 0;
+      // X = F X + B u
+      X[0] += X[2] * dt + 0.5 * aE * dt * dt;
+      X[1] += X[3] * dt + 0.5 * aN * dt * dt;
+      X[2] += aE * dt;
+      X[3] += aN * dt;
+      // P = F P F^T + Q  (F = [[1,0,dt,0],[0,1,0,dt],[0,0,1,0],[0,0,0,1]])
+      function rowF(P) {
+        var O = P.slice();
+        for (var c = 0; c < 4; c++) {
+          O[idx(0,c)] = P[idx(0,c)] + dt * P[idx(2,c)];
+          O[idx(1,c)] = P[idx(1,c)] + dt * P[idx(3,c)];
+        }
+        return O;
+      }
+      function colF(P) {
+        var O = P.slice();
+        for (var r = 0; r < 4; r++) {
+          O[idx(r,0)] = P[idx(r,0)] + dt * P[idx(r,2)];
+          O[idx(r,1)] = P[idx(r,1)] + dt * P[idx(r,3)];
+        }
+        return O;
+      }
+      var Pn = colF(rowF(P));
+      // Q (modele acceleration aleatoire) : bruit de process meme avec commande
+      var dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
+      var qa = sigmaA * sigmaA;
+      var q00 = dt4 / 4 * qa, q02 = dt3 / 2 * qa, q22 = dt2 * qa;
+      Pn[idx(0,0)] += q00; Pn[idx(0,2)] += q02; Pn[idx(2,0)] += q02; Pn[idx(2,2)] += q22;
+      Pn[idx(1,1)] += q00; Pn[idx(1,3)] += q02; Pn[idx(3,1)] += q02; Pn[idx(3,3)] += q22;
+      P = Pn;
+    }
+
     return {
       push: function (lat, lng, accuracy, t) {
         if (accuracy == null || !isFinite(accuracy)) accuracy = maxAcc;
@@ -154,39 +191,8 @@ export const algoSource = String.raw`
         dt = clamp(dt, 0.05, 5.0);
         lastT = t;
 
-        // --- predict ---
-        // X = F X
-        X[0] += X[2] * dt;
-        X[1] += X[3] * dt;
-        // P = F P F^T + Q
-        // F = [[1,0,dt,0],[0,1,0,dt],[0,0,1,0],[0,0,0,1]]
-        var Pn = P.slice();
-        // appliquer F a gauche puis a droite (forme close pour CV)
-        // d'abord rows: P' = F P
-        function rowF(P) {
-          var O = P.slice();
-          for (var c = 0; c < 4; c++) {
-            O[idx(0,c)] = P[idx(0,c)] + dt * P[idx(2,c)];
-            O[idx(1,c)] = P[idx(1,c)] + dt * P[idx(3,c)];
-          }
-          return O;
-        }
-        function colF(P) {
-          var O = P.slice();
-          for (var r = 0; r < 4; r++) {
-            O[idx(r,0)] = P[idx(r,0)] + dt * P[idx(r,2)];
-            O[idx(r,1)] = P[idx(r,1)] + dt * P[idx(r,3)];
-          }
-          return O;
-        }
-        Pn = colF(rowF(P));
-        // Q (modele acceleration aleatoire)
-        var dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
-        var qa = sigmaA * sigmaA;
-        var q00 = dt4 / 4 * qa, q02 = dt3 / 2 * qa, q22 = dt2 * qa;
-        Pn[idx(0,0)] += q00; Pn[idx(0,2)] += q02; Pn[idx(2,0)] += q02; Pn[idx(2,2)] += q22;
-        Pn[idx(1,1)] += q00; Pn[idx(1,3)] += q02; Pn[idx(3,1)] += q02; Pn[idx(3,3)] += q22;
-        P = Pn;
+        // --- predict (vitesse constante : pas de commande inertielle ici) ---
+        predictStep(dt, 0, 0);
 
         // --- update (mesure position x,y) ---
         // innovation
@@ -237,6 +243,26 @@ export const algoSource = String.raw`
         var ll = toLatLng(ref, X[0], X[1]);
         var posStd = Math.sqrt(Math.max(0, (P[idx(0,0)] + P[idx(1,1)]) / 2));
         return { lat: ll.lat, lng: ll.lng, accuracy: posStd, moving: moving, speed: speedLP, used: true };
+      },
+      // Prediction inertielle entre deux fixes GPS : avance l'etat avec
+      // l'acceleration mesuree (repere monde est/nord, m/s^2). Recale par push().
+      // No-op tant qu'aucun fix GPS n'a ancre le filtre -> sans appel a predict,
+      // push() se comporte exactement comme avant (anti-regression).
+      predict: function (aE, aN, t) {
+        if (X === null || ref === null) return null;
+        var dt = (t != null && lastT != null) ? (t - lastT) / 1000 : 0.05;
+        dt = clamp(dt, 0.01, 1.0);
+        lastT = t;
+        if (!isFinite(aE)) aE = 0;
+        if (!isFinite(aN)) aN = 0;
+        predictStep(dt, aE, aN);
+        // ZUPT echelonne sur dt : a basse vitesse on saigne la vitesse pour
+        // empecher la derive entre deux fixes (deadband cote capteur force a=0).
+        var sp = hypot(X[2], X[3]);
+        if (sp < speedThresh) { var f = Math.pow(zupt, dt); X[2] *= f; X[3] *= f; }
+        var ll = toLatLng(ref, X[0], X[1]);
+        var posStd = Math.sqrt(Math.max(0, (P[idx(0,0)] + P[idx(1,1)]) / 2));
+        return { lat: ll.lat, lng: ll.lng, accuracy: posStd, moving: sp > speedThresh, speed: sp };
       },
       getRef: function () { return ref; },
       reset: function () { ref = null; X = null; P = null; lastT = null; speedLP = 0; }

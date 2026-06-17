@@ -208,6 +208,54 @@ console.log('\n== INTEGRATION : session simulée jardin (pipeline complet) ==');
   ok(err < 6, 'session simulée : beacon localisé à moins de 6 m');
 }
 
+console.log('\n== FUSION : predict no-op avant le premier fix GPS ==');
+{
+  const f = A.createGpsFilter();
+  const r = f.predict(1.0, 0, 1000); // accel franche, mais aucun GPS recu
+  ok(r === null, 'predict ne fait rien tant qu aucun GPS n a ancre le filtre (fallback = comportement actuel)');
+}
+
+console.log('\n== FUSION : prediction inertielle pendant une coupure GPS ==');
+{
+  // Scenario : 5 s a vitesse constante (1 m/s est) avec GPS @1Hz pour etablir la
+  // vitesse, puis 5 s d acceleration (+0.5 m/s^2) SANS aucun fix GPS (coupure).
+  // Les deux filtres partagent la meme vitesse de base ; pendant la coupure le CV
+  // pur garde cette vitesse constante et rate le changement, tandis que l IMU-aide
+  // integre l accelerometre et suit l acceleration. Memes fixes GPS pour les deux.
+  const lat0 = 48.8566, lng0 = 2.3522;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const dt = 0.05; // 20 Hz
+  function deadband(v) { return Math.abs(v) < 0.12 ? 0 : v; } // comme le capteur (App.tsx)
+  const fIMU = A.createGpsFilter();
+  const fCV  = A.createGpsFilter();
+  let x = 0, vx = 1.0;        // verite est : demarre a 1 m/s
+  let rI = null, rC = null;
+  const steps = 200;          // 10 s
+  for (let i = 0; i < steps; i++) {
+    const t = i * dt, tms = t * 1000;
+    const aE = (t >= 5) ? 0.5 : 0;     // acceleration a partir de 5 s (pendant la coupure)
+    // integre la verite
+    x += vx * dt + 0.5 * aE * dt * dt;
+    vx += aE * dt;
+    const gpsOn = (t < 5) && (i % 20 === 0); // GPS @1Hz uniquement avant la coupure
+    if (gpsOn) {
+      const gLat = lat0 + gaussNoise(3) / mLat;
+      const gLng = lng0 + (x + gaussNoise(3)) / mLng;
+      rI = fIMU.push(gLat, gLng, 3, tms);
+      rC = fCV.push(gLat, gLng, 3, tms);
+    } else {
+      const aMeasE = deadband(aE + 0.03 + gaussNoise(0.06)); // accel mesuree + biais + bruit
+      rI = fIMU.predict(aMeasE, 0, tms);
+      rC = fCV.predict(0, 0, tms);
+    }
+  }
+  const exI = (rI.lng - lng0) * mLng, exC = (rC.lng - lng0) * mLng;
+  const errI = Math.abs(exI - x), errC = Math.abs(exC - x);
+  console.log('  vrai est=' + x.toFixed(2) + 'm  IMU=' + exI.toFixed(2) + ' (err ' + errI.toFixed(2) + ')  CV=' + exC.toFixed(2) + ' (err ' + errC.toFixed(2) + ')');
+  ok(errI < errC, 'IMU-aide suit l acceleration pendant la coupure, mieux que CV pur');
+  ok(errI < 3.0, 'erreur IMU faible malgre 5 s sans GPS (' + errI.toFixed(2) + 'm)');
+}
+
 console.log('\n----------------------------------------');
 console.log('Total: ' + passed + ' OK, ' + failed + ' FAIL');
 process.exit(failed > 0 ? 1 : 0);
