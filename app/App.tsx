@@ -23,6 +23,13 @@ const TARGET_MAC = '51:00:25:09:00:4E';
 const STILL_VAR_THRESHOLD = 0.003;
 const STILL_WINDOW_MS = 2000;
 
+// Detection de pas : pics sur la norme accelero (en g), au-dessus de la moyenne
+// glissante. Cadence de marche ~1.5-2.5 Hz -> a 10 Hz c'est propre.
+// Hysteresis (arme/desarme) + periode refractaire pour ne compter qu'un pic/pas.
+const STEP_PEAK_G = 0.08;      // exces au-dessus de la moyenne pour declencher un pas
+const STEP_REARM_G = 0.03;     // il faut redescendre sous ce seuil pour ré-armer
+const STEP_REFRACTORY_MS = 280; // 2 pas ne peuvent pas etre plus rapproches que ca
+
 async function requestAndroidPermissions(): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
   const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
@@ -52,6 +59,10 @@ export default function App() {
   const accelSubRef = useRef<ReturnType<typeof Accelerometer.addListener> | null>(null);
   const accelBufRef = useRef<{ t: number; mag: number }[]>([]);
   const lastStillRef = useRef<boolean | null>(null);
+  // Compteur de pas (detection de pics sur la meme norme accelero que le still-gate)
+  const stepCountRef = useRef<number>(0);
+  const lastStepMsRef = useRef<number>(0);
+  const stepArmedRef = useRef<boolean>(true);
   const [, setWebviewReady] = useState(false);
 
   useEffect(() => {
@@ -135,6 +146,22 @@ export default function App() {
         v += d * d;
       }
       v /= buf.length;
+
+      // --- Detection de pas : pic de la norme au-dessus de la moyenne glissante ---
+      // mag inclut la gravite (~1 g au repos) ; l'exces = oscillation de la marche.
+      const excess = mag - mean;
+      if (
+        stepArmedRef.current &&
+        excess > STEP_PEAK_G &&
+        now - lastStepMsRef.current > STEP_REFRACTORY_MS
+      ) {
+        stepCountRef.current++;
+        lastStepMsRef.current = now;
+        stepArmedRef.current = false; // il faut redescendre avant de recompter
+        postToWebview({ type: 'step', t: now, count: stepCountRef.current });
+      }
+      if (excess < STEP_REARM_G) stepArmedRef.current = true;
+
       const isStill = v < STILL_VAR_THRESHOLD;
       // n'emet qu'au changement d'etat pour eviter le spam
       if (lastStillRef.current !== isStill) {
@@ -149,6 +176,9 @@ export default function App() {
     accelSubRef.current = null;
     accelBufRef.current = [];
     lastStillRef.current = null;
+    stepCountRef.current = 0;
+    lastStepMsRef.current = 0;
+    stepArmedRef.current = true;
   }
 
   async function triggerHaptic(intensity: number) {
@@ -183,6 +213,9 @@ export default function App() {
       scans: 0, matched: 0, lastRssi: 0, lastAgeSec: -1, deviceName: '',
     };
     lastSeenMsRef.current = 0;
+    stepCountRef.current = 0;
+    lastStepMsRef.current = 0;
+    stepArmedRef.current = true;
 
     try {
       IBeaconScanner.start(TARGET_MAC);

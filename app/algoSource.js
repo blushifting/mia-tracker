@@ -69,49 +69,149 @@ export const algoSource = String.raw`
     };
   }
 
-  // ---------- moteur chaud / froid (pente RSSI en dBm/s) ----------
-  // NOTE : sera remplace en phase 2 par createTrendTracker (pente indexee sur
-  // les PAS de l'utilisateur, pas sur le temps). Conserve ici le temps que le
-  // pipeline phase 2 soit en place, pour rester compilable et testable.
-  function createProximity(opts) {
+  // ---------- moteur de tendance chaud/froid indexe sur les PAS ----------
+  // Coeur du pivot : le RSSI immobile est du bruit pur ; il n'est interpretable
+  // que CORRELE au deplacement de l'utilisateur. On indexe donc la fenetre
+  // glissante sur les PAS (comptes par l'accelerometre), pas sur le temps.
+  //
+  //   push(filteredRssi, stepCount, t, isStill) a chaque lecture RSSI.
+  //
+  // Verdict = delta entre la mediane RSSI du dernier tiers et du premier tiers
+  // de la fenetre (en pas). RSSI qui monte a mesure qu'on avance -> CHAUD.
+  //
+  // Etats renvoyes (champ verdict) :
+  //   'hot' / 'cold' / 'stable'  : verdict directionnel (hysteresis 3 etats)
+  //   'searching'                : gel — pas assez de pas pour juger (avance !)
+  //   'unstable'                 : gros saut RSSI sans aucun pas -> Mia bouge ?
+  function createTrendTracker(opts) {
     opts = opts || {};
-    var win = opts.windowMs != null ? opts.windowMs : 2500;
-    var enterHot = opts.enterHot != null ? opts.enterHot : 1.2;   // dBm/s
-    var enterCold = opts.enterCold != null ? opts.enterCold : -1.2;
-    var exitBand = opts.exitBand != null ? opts.exitBand : 0.4;
-    var buf = [];
-    var state = 'stable';
+    var windowSteps  = opts.windowSteps  != null ? opts.windowSteps  : 6;    // ~4 m a 0.7 m/pas
+    var minSteps     = opts.minSteps     != null ? opts.minSteps     : 3;    // pas mini pour un verdict directionnel
+    var enterDelta   = opts.enterDelta   != null ? opts.enterDelta   : 2.0;  // dB/fenetre pour entrer en CHAUD/FROID
+    var exitDelta    = opts.exitDelta    != null ? opts.exitDelta    : 0.8;  // dB/fenetre : bande morte d'hysteresis
+    var jumpNoStepDb = opts.jumpNoStepDb != null ? opts.jumpNoStepDb : 6.0;  // amplitude RSSI sans pas -> Mia bouge
+    var purgeStillMs = opts.purgeStillMs != null ? opts.purgeStillMs : 10000;// immobilite longue -> purge la fenetre
+    var maxGapMs     = opts.maxGapMs     != null ? opts.maxGapMs     : 4000;  // trou de mesure (coupure GATT) -> purge
+    var stepMeters   = opts.stepMeters   != null ? opts.stepMeters   : 0.7;  // pour l'indicatif dB/m
+    var maxLen       = opts.maxLen       != null ? opts.maxLen       : 240;  // plafond FIFO (immobilite)
 
-    function slope() {
-      if (buf.length < 3) return 0;
-      // regression lineaire v ~ a + b*t  ; t en secondes relatives
-      var t0 = buf[0].t;
-      var n = buf.length, st = 0, sv = 0, stt = 0, stv = 0;
-      for (var i = 0; i < n; i++) {
-        var tt = (buf[i].t - t0) / 1000, vv = buf[i].v;
-        st += tt; sv += vv; stt += tt * tt; stv += tt * vv;
+    var buf = [];            // { rssi, step, t }
+    var state = 'stable';    // etat directionnel hysteretique
+    var stillSince = null;
+
+    function medianThird(lo, hi) {
+      var vals = [];
+      for (var i = 0; i < buf.length; i++) {
+        if (buf[i].step >= lo && buf[i].step <= hi) vals.push(buf[i].rssi);
       }
-      var denom = n * stt - st * st;
-      if (Math.abs(denom) < 1e-6) return 0;
-      return (n * stv - st * sv) / denom; // dBm/s
+      return vals.length ? median(vals) : null;
+    }
+
+    return {
+      push: function (rssi, step, t, isStill) {
+        if (step == null) step = 0;
+        // trou de mesure (coupure GATT) : au-dela de maxGapMs, la correlation
+        // entre les anciens echantillons et le nouveau est rompue -> on purge
+        // pour ne pas fabriquer un faux verdict a la reprise.
+        if (buf.length && (t - buf[buf.length - 1].t) > maxGapMs) buf = [];
+        buf.push({ rssi: rssi, step: step, t: t });
+        // fenetre glissante indexee en pas
+        var minStep = step - windowSteps;
+        while (buf.length && buf[0].step < minStep) buf.shift();
+        // plafond FIFO : evite la croissance infinie a l'arret (meme pas repete)
+        while (buf.length > maxLen) buf.shift();
+
+        // purge apres immobilite longue : le RSSI a pu changer parce que MIA a
+        // bouge, pas toi -> on repart d'une fenetre propre.
+        if (isStill) {
+          if (stillSince == null) stillSince = t;
+          if (t - stillSince > purgeStillMs) { buf = [{ rssi: rssi, step: step, t: t }]; }
+        } else {
+          stillSince = null;
+        }
+
+        var firstStep = buf[0].step;
+        var stepsInWindow = step - firstStep;
+
+        // amplitude RSSI dans la fenetre
+        var lo = Infinity, hi = -Infinity;
+        for (var i = 0; i < buf.length; i++) {
+          if (buf[i].rssi < lo) lo = buf[i].rssi;
+          if (buf[i].rssi > hi) hi = buf[i].rssi;
+        }
+        var range = hi - lo;
+
+        // cas "Mia bouge" : gros saut RSSI alors qu'aucun pas n'a ete fait
+        if (stepsInWindow < 1 && range > jumpNoStepDb) {
+          state = 'stable'; // le paysage RSSI a change : plus de direction fiable
+          return { state: state, verdict: 'unstable', delta: 0, dbPerMeter: 0, steps: stepsInWindow, range: range };
+        }
+
+        // gel : pas assez de pas pour juger d'une tendance
+        if (stepsInWindow < minSteps) {
+          return { state: state, verdict: 'searching', delta: 0, dbPerMeter: 0, steps: stepsInWindow, range: range };
+        }
+
+        // delta = mediane(dernier tiers) - mediane(premier tiers), en pas
+        var span = stepsInWindow;
+        var loCut = firstStep + span / 3;
+        var hiCut = firstStep + 2 * span / 3;
+        var mFirst = medianThird(firstStep, loCut);
+        var mLast  = medianThird(hiCut, step);
+        if (mFirst == null || mLast == null) {
+          return { state: state, verdict: 'searching', delta: 0, dbPerMeter: 0, steps: stepsInWindow, range: range };
+        }
+        var delta = mLast - mFirst; // dB sur la fenetre
+        var meters = Math.max(0.1, span * stepMeters);
+        var dbPerMeter = delta / meters;
+
+        // machine a etats avec hysteresis (sortie seulement en repassant la bande morte)
+        if (state === 'hot') {
+          if (delta < exitDelta) state = (delta < -enterDelta ? 'cold' : 'stable');
+        } else if (state === 'cold') {
+          if (delta > -exitDelta) state = (delta > enterDelta ? 'hot' : 'stable');
+        } else {
+          if (delta > enterDelta) state = 'hot';
+          else if (delta < -enterDelta) state = 'cold';
+        }
+        return { state: state, verdict: state, delta: delta, dbPerMeter: dbPerMeter, steps: stepsInWindow, range: range };
+      },
+      reset: function () { buf = []; state = 'stable'; stillSince = null; }
+    };
+  }
+
+  // ---------- paliers de signal (pas de fausse distance en metres) ----------
+  // Paliers francs sur le RSSI filtre, avec hysteresis (marge dB) pour ne pas
+  // clignoter a la frontiere. Seuils dBm tunables.
+  function createSignalTiers(opts) {
+    opts = opts || {};
+    var tiers = opts.tiers || [
+      { min: -55,       key: 'burning',   label: 'BRULANT' },
+      { min: -65,       key: 'veryClose', label: 'TRES PROCHE' },
+      { min: -75,       key: 'close',     label: 'PROCHE' },
+      { min: -85,       key: 'weak',      label: 'FAIBLE' },
+      { min: -Infinity, key: 'trace',     label: 'TRACE' }
+    ];
+    var margin = opts.margin != null ? opts.margin : 2.0; // hysteresis (dB)
+    var current = null;
+
+    function rawTier(rssi) {
+      for (var i = 0; i < tiers.length; i++) if (rssi >= tiers[i].min) return i;
+      return tiers.length - 1;
     }
     return {
-      push: function (filteredRssi, dist, t) {
-        buf.push({ t: t, v: filteredRssi });
-        while (buf.length && (t - buf[0].t) > win) buf.shift();
-        var b = slope();
-        // machine a etats avec hysteresis
-        if (state === 'hot') {
-          if (b < exitBand) state = (b < enterCold ? 'cold' : 'stable');
-        } else if (state === 'cold') {
-          if (b > -exitBand) state = (b > enterHot ? 'hot' : 'stable');
+      push: function (rssi) {
+        if (current === null) {
+          current = rawTier(rssi);
         } else {
-          if (b > enterHot) state = 'hot';
-          else if (b < enterCold) state = 'cold';
+          // monter vers un palier plus fort (index plus petit) : franchir la borne + marge
+          while (current > 0 && rssi >= tiers[current - 1].min + margin) current--;
+          // descendre vers un palier plus faible : passer sous la borne - marge
+          while (current < tiers.length - 1 && rssi < tiers[current].min - margin) current++;
         }
-        return { state: state, slope: b, distance: dist };
+        return { index: current, key: tiers[current].key, label: tiers[current].label, count: tiers.length, rssi: rssi };
       },
-      reset: function () { buf = []; state = 'stable'; }
+      reset: function () { current = null; }
     };
   }
 
@@ -122,7 +222,8 @@ export const algoSource = String.raw`
     rssiToDistance: rssiToDistance, distanceSigma: distanceSigma,
     // filtres / moteurs
     createRssiFilter: createRssiFilter,
-    createProximity: createProximity
+    createTrendTracker: createTrendTracker,
+    createSignalTiers: createSignalTiers
   };
 })();
 `;

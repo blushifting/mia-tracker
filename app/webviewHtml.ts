@@ -155,7 +155,7 @@ export const webviewHtml = `<!DOCTYPE html>
     <div class="dbg-row"><span><span class="dbg-key">ping natif</span>: <span id="dbg-natp">—</span> &middot; <span class="dbg-key">accel</span>: <span id="dbg-accel">—</span> &middot; <span class="dbg-key">haptic</span>: <span id="dbg-haptic">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">mac ciblee</span>: <span id="dbg-mac">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">scans</span> <span id="dbg-nat">0</span> &middot; <span class="dbg-key">matched</span> <span id="dbg-natm">0</span> &middot; <span class="dbg-key">rssi</span> <span id="dbg-natr">—</span> dBm &middot; <span class="dbg-key">age</span> <span id="dbg-age">—</span>s</span></div>
-    <div class="dbg-row"><span><span class="dbg-key">still</span> <span id="dbg-still">—</span> &middot; <span class="dbg-key">var</span> <span id="dbg-var">—</span> &middot; <span class="dbg-key">kf.x</span> <span id="dbg-kfx">—</span></span></div>
+    <div class="dbg-row"><span><span class="dbg-key">still</span> <span id="dbg-still">—</span> &middot; <span class="dbg-key">var</span> <span id="dbg-var">—</span> &middot; <span class="dbg-key">pas</span> <span id="dbg-steps">0</span> &middot; <span class="dbg-key">kf.x</span> <span id="dbg-kfx">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
   </div>
   <div id="main">
@@ -243,8 +243,6 @@ export const webviewHtml = `<!DOCTYPE html>
   var K_R = 15.0;           // measurement noise variance
   var K_Q = 2.0;            // process noise variance
   var RSSI_JUMP_DBM = 15;   // saut max accepte entre 2 samples consecutifs (sinon outlier)
-  var HOT_COLD_WINDOW_MS = 5000;  // fenetre pour la pente RSSI
-  var HOT_COLD_HYST_DBM = 4;      // hysteresis : sous ce delta, on dit "stable"
   var HAPTIC_TICK_MS = 1400;      // periode minimum entre 2 vibrations
   var CALIB_DURATION_MS = 10000;  // duree de la mesure de calibration
   var DIST_DISPLAY_ALPHA = 0.25;  // EMA pour lisser la distance affichee
@@ -313,7 +311,12 @@ export const webviewHtml = `<!DOCTYPE html>
 
   // ===== State =====
   var scanning = false;
-  var rssiHistory = [];       // { t, rssi (smoothed) } pour la pente chaud/froid
+  var stepCount = 0;          // compteur de pas cumulatif (envoye par RN)
+  // Moteurs v2 (injectes via algoSource) : tendance indexee sur les pas + paliers.
+  var trend = A ? A.createTrendTracker() : null;
+  var tiers = A ? A.createSignalTiers() : null;
+  var lastTier = null;
+  var lastV = null;           // dernier verdict de tendance (pour re-render periodique)
 
   // Kalman 1D state
   var kf = { initialized: false, x: 0, p: 1.0 };
@@ -335,18 +338,17 @@ export const webviewHtml = `<!DOCTYPE html>
 
   // Haptic feedback state
   var lastHapticMs = 0;
-  var lastHotcoldState = 'idle'; // 'hot' / 'cold' / 'stable' / 'idle'
 
   // Calibration state
   var calib = null; // { phase, startMs, samples, timer }
 
-  // Distance affichee : EMA pour lisser visuellement (RSSI fluctue tout seul).
+  // Distance indicative (EMA) : maintient la valeur lissee. L'affichage est
+  // rendu par renderVerdict (couple au palier de signal courant).
   var distDisplay = null;
   function updateDistDisplay(rawDist) {
     if (distDisplay == null) distDisplay = rawDist;
     else distDisplay = DIST_DISPLAY_ALPHA * rawDist + (1 - DIST_DISPLAY_ALPHA) * distDisplay;
-    var el = document.getElementById('dist-line');
-    if (el) el.textContent = distDisplay < 1000 ? '~ ' + distDisplay.toFixed(1) + ' m' : '~ >1 km';
+    return distDisplay;
   }
 
   // RX counters
@@ -405,59 +407,52 @@ export const webviewHtml = `<!DOCTYPE html>
     else          { btn.textContent = '▶ Scanner'; btn.className = 'btn primary'; }
   }
 
-  // ===== Hot / cold indicator =====
-  // Calcul de la pente du RSSI lisse sur HOT_COLD_WINDOW_MS (regression lineaire,
-  // dBm/s). RSSI augmente quand on se rapproche -> "chaud".
-  // NOTE : moteur v1 provisoire (base sur le temps). Sera remplace en phase 2 par
-  // un moteur base sur les PAS de l'utilisateur (createTrendTracker).
-  function updateHotCold() {
-    var now = Date.now();
-    while (rssiHistory.length && now - rssiHistory[0].t > HOT_COLD_WINDOW_MS) rssiHistory.shift();
+  // ===== Verdict chaud / froid (moteur v2 : tendance indexee sur les pas) =====
+  // Rendu du dernier verdict renvoye par createTrendTracker. Le RSSI immobile
+  // etant du bruit, aucun verdict directionnel n'est emis tant qu'on n'a pas
+  // marche assez ("Avance pour chercher"), et un gros saut sans pas affiche
+  // "Mia bouge ?" au lieu d'une fausse direction.
+  function renderVerdict(v) {
     var arrow = document.getElementById('hc-arrow');
     var text  = document.getElementById('hc-text');
     var slope = document.getElementById('hc-slope');
-    if (rssiHistory.length < 3) {
-      arrow.textContent = '—';
-      arrow.style.color = 'var(--neutral)';
-      text.textContent = scanning ? 'En attente de mesures…' : 'Scan arrêté';
+    var distEl = document.getElementById('dist-line');
+    if (!v) {
+      arrow.textContent = '—'; arrow.style.color = 'var(--neutral)';
+      text.textContent = scanning ? 'En attente du signal…' : 'Scan arrêté';
       text.style.color = 'var(--neutral)';
-      slope.textContent = '— dBm/s';
+      slope.textContent = '—';
       return;
     }
-    // regression lineaire y = a*t + b, t en secondes depuis premiere mesure
-    var t0 = rssiHistory[0].t;
-    var sx = 0, sy = 0, sxx = 0, sxy = 0, nP = rssiHistory.length;
-    for (var i = 0; i < nP; i++) {
-      var ts = (rssiHistory[i].t - t0) / 1000;
-      var y = rssiHistory[i].rssi;
-      sx += ts; sy += y; sxx += ts*ts; sxy += ts*y;
+    var verdict = v.verdict;
+    if (verdict === 'hot') {
+      arrow.textContent = '\u{1F525}'; arrow.style.color = 'var(--hot)';
+      text.textContent = 'Tu chauffes'; text.style.color = 'var(--hot)';
+      slope.textContent = 'Δ ' + (v.delta >= 0 ? '+' : '') + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
+    } else if (verdict === 'cold') {
+      arrow.textContent = '\u{2744}'; arrow.style.color = 'var(--cold)';
+      text.textContent = 'Tu refroidis'; text.style.color = 'var(--cold)';
+      slope.textContent = 'Δ ' + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
+    } else if (verdict === 'unstable') {
+      arrow.textContent = '\u{26A0}'; arrow.style.color = 'var(--warn)';
+      text.textContent = 'Mia bouge ?'; text.style.color = 'var(--warn)';
+      slope.textContent = 'signal instable';
+    } else if (verdict === 'searching') {
+      arrow.textContent = '\u{1F6B6}'; arrow.style.color = 'var(--warn)';
+      text.textContent = 'Avance pour chercher'; text.style.color = 'var(--warn)';
+      slope.textContent = v.steps + ' pas \xB7 avance…';
+    } else { // stable
+      arrow.textContent = '≈'; arrow.style.color = 'var(--neutral)';
+      text.textContent = 'Stable'; text.style.color = 'var(--neutral)';
+      slope.textContent = 'Δ ' + (v.delta >= 0 ? '+' : '') + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
     }
-    var denom = nP * sxx - sx * sx;
-    var slopeVal = denom > 1e-6 ? (nP * sxy - sx * sy) / denom : 0; // dBm/s
-    var deltaDbm = slopeVal * Math.min(HOT_COLD_WINDOW_MS / 1000, (now - t0) / 1000);
-    slope.textContent = (slopeVal >= 0 ? '+' : '') + slopeVal.toFixed(2) + ' dBm/s';
-    var newState;
-    if (deltaDbm > HOT_COLD_HYST_DBM) {
-      arrow.textContent = '\u{1F525}';
-      arrow.style.color = 'var(--hot)';
-      text.textContent = 'Tu te rapproches';
-      text.style.color = 'var(--hot)';
-      newState = 'hot';
-    } else if (deltaDbm < -HOT_COLD_HYST_DBM) {
-      arrow.textContent = '\u{2744}';
-      arrow.style.color = 'var(--cold)';
-      text.textContent = "Tu t'éloignes";
-      text.style.color = 'var(--cold)';
-      newState = 'cold';
-    } else {
-      arrow.textContent = '≈';
-      arrow.style.color = 'var(--neutral)';
-      text.textContent = 'Stable';
-      text.style.color = 'var(--neutral)';
-      newState = 'stable';
+    // ligne palier + distance indicative
+    if (distEl) {
+      var d = distDisplay;
+      var dTxt = (d == null) ? '—' : (d < 1000 ? '~ ' + d.toFixed(1) + ' m' : '~ >1 km');
+      distEl.textContent = (lastTier ? lastTier.label + ' \xB7 ' : '') + dTxt;
     }
-    triggerHapticIfHot(newState);
-    lastHotcoldState = newState;
+    triggerHapticIfHot(verdict);
   }
 
   // Haptique : tick periodique quand on se rapproche, intensite croissante avec le RSSI.
@@ -493,12 +488,14 @@ export const webviewHtml = `<!DOCTYPE html>
     updateRSSIBar(smoothed);
     setStatus('Beacon: ' + (name || cfg.name) + ' \xB7 RSSI ' + smoothed.toFixed(1) + ' dBm', 'active');
 
-    // Historique pour chaud/froid
-    rssiHistory.push({ t: now, rssi: smoothed });
-    updateHotCold();
+    // Distance indicative (EMA) + palier de signal
+    updateDistDisplay(rssiToDistance(smoothed));
+    if (tiers) lastTier = tiers.push(smoothed);
 
-    var dist = rssiToDistance(smoothed);
-    updateDistDisplay(dist);
+    // Verdict de tendance : moteur v2 indexe sur les pas (fige a l'immobilite,
+    // detecte "Mia bouge", ne juge que si on a marche assez).
+    lastV = trend ? trend.push(smoothed, stepCount, now, isStill) : null;
+    renderVerdict(lastV);
 
     // Si on est en calibration, alimente les samples.
     if (calib && calib.phase === 'recording' && keepForFusion) {
@@ -611,18 +608,22 @@ export const webviewHtml = `<!DOCTYPE html>
   }
   window._snack = snack;
 
-  // Rafraichit l'indicateur chaud/froid periodiquement (sa pente evolue avec le temps).
+  // Re-render periodique : maintient la cadence haptique quand on reste CHAUD
+  // et rafraichit l'etat "en attente" tant qu'aucun signal n'arrive.
   setInterval(function() {
-    if (scanning) updateHotCold();
+    if (scanning) renderVerdict(lastV);
   }, 500);
 
   // ===== Message bridge from RN =====
   function onMessage(raw) {
     try {
       var msg = JSON.parse(raw);
-      if (msg.type === 'rssi' || msg.type === 'still') recorder.rec(msg);
+      if (msg.type === 'rssi' || msg.type === 'still' || msg.type === 'step') recorder.rec(msg);
       switch (msg.type) {
         case 'rssi':       bumpRx('rssi'); handleRSSI(msg.rssi, msg.name); break;
+        case 'step':       stepCount = (typeof msg.count === 'number') ? msg.count : stepCount + 1;
+                           var stEl = document.getElementById('dbg-steps'); if (stEl) stEl.textContent = stepCount;
+                           break;
         case 'still':      bumpRx('still');
                            isStill = !!msg.isStill;
                            stillSinceMs = isStill ? Date.now() : 0;
@@ -639,12 +640,15 @@ export const webviewHtml = `<!DOCTYPE html>
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arrêté', msg.scanning ? 'active' : '');
                            applyDebugVisibility();
                            if (msg.scanning) {
+                             stepCount = 0; lastTier = null; lastV = null; distDisplay = null;
+                             if (trend) trend.reset(); if (tiers) tiers.reset(); resetKalman();
+                             var stEl2 = document.getElementById('dbg-steps'); if (stEl2) stEl2.textContent = '0';
                              ['dbg-nat','dbg-natm'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='0';});
                              ['dbg-natr','dbg-age'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='—';});
                            } else {
                              isStill = false; stillSinceMs = 0;
                            }
-                           updateHotCold();
+                           renderVerdict(scanning ? lastV : null);
                            updateMotionPill();
                            break;
         case 'debug':      var e;

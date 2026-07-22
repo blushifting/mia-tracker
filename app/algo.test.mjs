@@ -81,33 +81,117 @@ console.log('\n== RSSI : rejet d outlier ==');
   ok(Math.abs(v - before) < 8, 'le spike +50dBm ne deplace pas l estimation de plus de 8 (' + (v - before).toFixed(1) + ')');
 }
 
-console.log('\n== Chaud/froid (v1, provisoire) : detecte approche / eloignement ==');
+console.log('\n== Tendance : approche (RSSI monte avec les pas) -> CHAUD ==');
 {
-  const px = A.createProximity({ windowMs: 2500, enterHot: 1.0, enterCold: -1.0 });
-  let st;
-  // approche : rssi monte
-  for (let i = 0; i < 20; i++) st = px.push(-80 + i * 1.5, A.rssiToDistance(-80 + i * 1.5, -40, 2.5), i * 200).state;
-  ok(st === 'hot', 'approche detectee (etat=' + st + ')');
-  // eloignement : rssi descend
-  const px2 = A.createProximity({ windowMs: 2500 });
-  for (let i = 0; i < 20; i++) st = px2.push(-50 - i * 1.5, A.rssiToDistance(-50 - i * 1.5, -40, 2.5), i * 200).state;
-  ok(st === 'cold', 'eloignement detecte (etat=' + st + ')');
+  seed(10);
+  const tr = A.createTrendTracker();
+  let res, t = 0;
+  for (let step = 0; step <= 8; step++) {
+    const baseR = -80 + step * 2.5; // monte 2.5 dB par pas
+    for (let k = 0; k < 4; k++) { res = tr.push(baseR + gaussNoise(0.8), step, t, false); t += 200; }
+  }
+  ok(res.verdict === 'hot', 'approche detectee (verdict=' + res.verdict + ', delta=' + res.delta.toFixed(1) + ')');
 }
 
-console.log('\n== Chaud/froid (v1, provisoire) : pas de flapping sur signal stable ==');
+console.log('\n== Tendance : eloignement (RSSI descend avec les pas) -> FROID ==');
 {
-  seed(3);
-  // Pipeline reel : RSSI brut -> filtre Kalman -> proximite (comme dans l app).
-  const rf = A.createRssiFilter({ medWin: 3, Q: 0.1, R: 6 });
-  const px = A.createProximity(); // defauts (window 2500, enter +/-1.2)
-  let changes = 0, prev = 'stable';
-  for (let i = 0; i < 200; i++) {
-    const filt = rf.push(-65 + gaussNoise(4)).value;
-    const s = px.push(filt, 5, i * 200).state;
-    if (s !== prev) { changes++; prev = s; }
+  seed(11);
+  const tr = A.createTrendTracker();
+  let res, t = 0;
+  for (let step = 0; step <= 8; step++) {
+    const baseR = -55 - step * 2.5; // descend 2.5 dB par pas
+    for (let k = 0; k < 4; k++) { res = tr.push(baseR + gaussNoise(0.8), step, t, false); t += 200; }
   }
-  console.log('  changements d etat=' + changes + ' sur 200 echantillons');
-  ok(changes <= 6, 'peu de changements d etat (hysteresis) sur signal stable');
+  ok(res.verdict === 'cold', 'eloignement detecte (verdict=' + res.verdict + ', delta=' + res.delta.toFixed(1) + ')');
+}
+
+console.log('\n== Tendance : immobile bruite +/-5 dB -> aucun verdict (gel) ==');
+{
+  seed(12);
+  const tr = A.createTrendTracker();
+  let res, t = 0, sawDir = false;
+  for (let k = 0; k < 100; k++) {
+    const noise = Math.max(-2.5, Math.min(2.5, gaussNoise(1.5))); // RSSI filtre au repos
+    res = tr.push(-70 + noise, 0, t, true); // step constant, immobile
+    t += 200;
+    if (res.verdict === 'hot' || res.verdict === 'cold') sawDir = true;
+  }
+  ok(!sawDir, 'immobile : jamais de verdict directionnel');
+  ok(res.verdict === 'searching', 'etat de gel (searching), verdict=' + res.verdict);
+}
+
+console.log('\n== Tendance : saut RSSI sans aucun pas -> "Mia bouge" (unstable) ==');
+{
+  seed(13);
+  const tr = A.createTrendTracker();
+  let t = 0;
+  // immobile, signal stable a -70
+  for (let k = 0; k < 10; k++) { tr.push(-70 + gaussNoise(0.3), 0, t, true); t += 200; }
+  // saut brutal et soutenu vers -52, toujours aucun pas
+  let unstableSeen = false, dirSeen = false;
+  for (let k = 0; k < 10; k++) {
+    const r = tr.push(-52 + gaussNoise(0.3), 0, t, true); t += 200;
+    if (r.verdict === 'unstable') unstableSeen = true;
+    if (r.verdict === 'hot' || r.verdict === 'cold') dirSeen = true;
+  }
+  ok(unstableSeen, 'saut RSSI sans pas signale "Mia bouge" (unstable)');
+  ok(!dirSeen, 'aucun verdict directionnel pendant le saut sans pas');
+}
+
+console.log('\n== Tendance : coupure GATT (trou de mesure) -> pas de faux verdict a la reprise ==');
+{
+  seed(14);
+  const tr = A.createTrendTracker({ maxGapMs: 4000 });
+  let res, t = 0;
+  // marche d approche : etablit CHAUD
+  for (let step = 0; step <= 6; step++) {
+    for (let k = 0; k < 4; k++) { res = tr.push(-80 + step * 3 + gaussNoise(0.5), step, t, false); t += 200; }
+  }
+  ok(res.verdict === 'hot', 'pre-condition : CHAUD etabli avant la coupure (' + res.verdict + ')');
+  // coupure de 6 s (> maxGapMs) puis une seule lecture tres differente, sans nouveau pas
+  t += 6000;
+  res = tr.push(-60, 6, t, false);
+  ok(res.verdict === 'searching', 'reprise apres coupure : pas de faux verdict (searching)');
+}
+
+console.log('\n== Tendance : hysteresis, pas de flapping sur montee bruitee ==');
+{
+  seed(15);
+  const tr = A.createTrendTracker();
+  let res, t = 0, changes = 0, prev = null, hotCount = 0, total = 0;
+  for (let step = 0; step <= 30; step++) {
+    const baseR = -85 + step * 0.6; // montee douce -> delta fenetre ~2.4 dB
+    for (let k = 0; k < 3; k++) {
+      res = tr.push(baseR + gaussNoise(1.2), step, t, false); t += 200;
+      if (res.verdict === 'hot' || res.verdict === 'cold' || res.verdict === 'stable') {
+        total++;
+        if (prev !== null && res.verdict !== prev) changes++;
+        prev = res.verdict;
+        if (res.verdict === 'hot') hotCount++;
+      }
+    }
+  }
+  console.log('  changements=' + changes + ' hot=' + hotCount + '/' + total);
+  ok(changes <= 4, 'peu de changements d etat malgre le bruit (hysteresis)');
+  ok(hotCount > total * 0.6, 'reste majoritairement en CHAUD sur une montee reguliere');
+}
+
+console.log('\n== Paliers : hysteresis a la frontiere + atteint BRULANT ==');
+{
+  seed(16);
+  const st = A.createSignalTiers({ margin: 2 });
+  let flips = 0, prev = null;
+  for (let k = 0; k < 80; k++) {
+    const r = st.push(-65 + gaussNoise(1.5)); // pile sur la frontiere -65
+    if (prev !== null && r.key !== prev) flips++;
+    prev = r.key;
+  }
+  console.log('  flips=' + flips + ' sur 80 echantillons');
+  ok(flips <= 6, 'pas de clignotement a la frontiere grace a la marge');
+  const st2 = A.createSignalTiers();
+  let last;
+  for (let k = 0; k < 5; k++) last = st2.push(-50);
+  ok(last.key === 'burning', 'palier BRULANT atteint a -50 dBm');
 }
 
 console.log('\n----------------------------------------');
