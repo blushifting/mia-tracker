@@ -26,11 +26,16 @@ export const webviewHtml = `<!DOCTYPE html>
   #status-dot.warn{background:var(--warn);} #status-dot.error{background:var(--danger);}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(57,211,83,.5);}70%{box-shadow:0 0 0 8px rgba(57,211,83,0);}100%{box-shadow:0 0 0 0 rgba(57,211,83,0);}}
   #status-text{font-family:'Share Tech Mono',monospace;font-size:.72rem;color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  #main{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;}
-  #hc-arrow{font-size:4rem;line-height:1;color:var(--neutral);transition:color .3s;}
-  #hc-text{font-size:1.4rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--neutral);text-align:center;transition:color .3s;}
-  #hc-slope{font-family:'Share Tech Mono',monospace;font-size:.85rem;color:var(--muted);}
-  #dist-line{font-family:'Share Tech Mono',monospace;font-size:.9rem;color:var(--beacon);}
+  /* Ecran plein : fond pleine couleur pilote par le palier, lisible a bout de bras. */
+  #screen{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:22px 16px;background:#14181f;transition:background-color .6s ease;text-align:center;overflow:hidden;}
+  #screen-main{display:flex;flex-direction:column;align-items:center;gap:6px;transition:opacity .4s;}
+  #screen.lost #screen-main{opacity:.32;}
+  #tier-label{font-size:2.6rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;line-height:1;color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.45);}
+  #tier-sub{font-family:'Share Tech Mono',monospace;font-size:1rem;color:rgba(255,255,255,.82);}
+  #hc-arrow{font-size:5rem;line-height:1;margin-top:2px;filter:drop-shadow(0 2px 8px rgba(0,0,0,.4));}
+  #hc-text{font-size:1.7rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;line-height:1.1;transition:color .3s;color:#e6edf3;}
+  #hc-slope{font-family:'Share Tech Mono',monospace;font-size:.8rem;color:rgba(255,255,255,.7);}
+  #conn-line{font-family:'Share Tech Mono',monospace;font-size:.9rem;color:rgba(255,255,255,.6);min-height:1.1em;margin-top:8px;font-weight:600;}
   #rssi-bar{display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
   #rssi-label{font-family:'Share Tech Mono',monospace;font-size:.75rem;color:var(--muted);min-width:80px;}
   #rssi-track{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;}
@@ -103,9 +108,28 @@ export const webviewHtml = `<!DOCTYPE html>
     <label>Nom affiché du beacon</label>
     <input id="cfg-name" type="text" value="Mia">
   </div>
+  <div class="field">
+    <label>Seuils des paliers (dBm)</label>
+    <input id="cfg-tiers" type="text" value="-55,-65,-75,-85">
+    <div class="hint">4 seuils décroissants : BRÛLANT ≥ 1er, TRÈS PROCHE ≥ 2e, PROCHE ≥ 3e, FAIBLE ≥ 4e, TRACE en dessous.</div>
+  </div>
+  <div class="field">
+    <label>Taille de la fenêtre (pas)</label>
+    <input id="cfg-window" type="number" value="6" min="2" max="20" step="1">
+    <div class="hint">Nombre de pas sur lesquels la tendance chaud/froid est jugée (~0,7 m/pas).</div>
+  </div>
+  <div class="field">
+    <label>Seuil de tendance (dB / fenêtre)</label>
+    <input id="cfg-delta" type="number" value="2" min="0.5" max="10" step="0.5">
+    <div class="hint">Écart de RSSI sur la fenêtre pour déclarer CHAUD ou FROID. Plus haut = moins sensible.</div>
+  </div>
   <div class="field row-field">
     <label>Vibration "chaud/froid"</label>
     <div id="cfg-haptic-switch" class="switch" onclick="toggleHaptic()"></div>
+  </div>
+  <div class="field row-field">
+    <label>Son "compteur Geiger"</label>
+    <div id="cfg-sound-switch" class="switch" onclick="toggleSound()"></div>
   </div>
   <div class="field row-field">
     <label>Gel quand téléphone immobile</label>
@@ -158,11 +182,15 @@ export const webviewHtml = `<!DOCTYPE html>
     <div class="dbg-row"><span><span class="dbg-key">still</span> <span id="dbg-still">—</span> &middot; <span class="dbg-key">var</span> <span id="dbg-var">—</span> &middot; <span class="dbg-key">pas</span> <span id="dbg-steps">0</span> &middot; <span class="dbg-key">kf.x</span> <span id="dbg-kfx">—</span></span></div>
     <div class="dbg-row"><span><span class="dbg-key">diag natif</span>: <span id="dbg-natd" class="dbg-hex">—</span></span></div>
   </div>
-  <div id="main">
-    <div id="hc-arrow">—</div>
-    <div id="hc-text">En attente du signal…</div>
-    <div id="hc-slope">— dBm/s</div>
-    <div id="dist-line">~ — m</div>
+  <div id="screen">
+    <div id="screen-main">
+      <div id="tier-label">PRÊT</div>
+      <div id="tier-sub"></div>
+      <div id="hc-arrow">—</div>
+      <div id="hc-text">Appuyez sur Scanner</div>
+      <div id="hc-slope"></div>
+    </div>
+    <div id="conn-line"></div>
   </div>
   <div id="rssi-bar">
     <div id="rssi-label">RSSI</div>
@@ -226,7 +254,11 @@ export const webviewHtml = `<!DOCTYPE html>
     txPower: -40, n: 2.5, name: 'Mia',
     showDebug: false,
     haptic: true,
-    stillGate: true
+    stillGate: true,
+    sound: false,                       // son "compteur Geiger" (cable en phase 4)
+    tiersDbm: [-55, -65, -75, -85],     // seuils des paliers de signal
+    windowSteps: 6,                     // fenetre de tendance (en pas)
+    enterDelta: 2.0                     // seuil dB/fenetre pour CHAUD/FROID
   };
   try {
     var saved = localStorage.getItem('miatracker_cfg');
@@ -246,6 +278,8 @@ export const webviewHtml = `<!DOCTYPE html>
   var HAPTIC_TICK_MS = 1400;      // periode minimum entre 2 vibrations
   var CALIB_DURATION_MS = 10000;  // duree de la mesure de calibration
   var DIST_DISPLAY_ALPHA = 0.25;  // EMA pour lisser la distance affichee
+  var CONN_SIGNAL_MS = 2000;      // age lecture RSSI : en-deca -> SIGNAL
+  var CONN_LOST_MS = 5000;        // au-dela -> PERDU (entre les deux : INSTABLE)
 
   function postRN(msg) {
     if (window.ReactNativeWebView) {
@@ -257,9 +291,13 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-txpower').value = cfg.txPower;
     document.getElementById('cfg-n').value = cfg.n;
     document.getElementById('cfg-name').value = cfg.name;
+    document.getElementById('cfg-tiers').value = cfg.tiersDbm.join(',');
+    document.getElementById('cfg-window').value = cfg.windowSteps;
+    document.getElementById('cfg-delta').value = cfg.enterDelta;
     document.getElementById('header-title').textContent = '\u{1F431} ' + cfg.name;
     document.getElementById('cfg-debug-switch').classList.toggle('on', !!cfg.showDebug);
     document.getElementById('cfg-haptic-switch').classList.toggle('on', !!cfg.haptic);
+    document.getElementById('cfg-sound-switch').classList.toggle('on', !!cfg.sound);
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', !!cfg.stillGate);
     applyDebugVisibility();
   }
@@ -286,18 +324,41 @@ export const webviewHtml = `<!DOCTYPE html>
     document.getElementById('cfg-stillgate-switch').classList.toggle('on', cfg.stillGate);
   };
 
+  window.toggleSound = function() {
+    cfg.sound = !cfg.sound;
+    document.getElementById('cfg-sound-switch').classList.toggle('on', cfg.sound);
+  };
+
   window.openConfig = function() { document.getElementById('config-panel').classList.add('open'); };
   window.closeConfig = function() { document.getElementById('config-panel').classList.remove('open'); };
   window.saveConfig = function() {
     cfg.txPower = parseFloat(document.getElementById('cfg-txpower').value) || -40;
     cfg.n       = parseFloat(document.getElementById('cfg-n').value) || 2.5;
     cfg.name    = (document.getElementById('cfg-name').value || '').trim() || 'Mia';
-    // showDebug / haptic / stillGate sont deja a jour via leurs toggles
+    cfg.windowSteps = Math.max(2, Math.round(parseFloat(document.getElementById('cfg-window').value) || 6));
+    cfg.enterDelta  = Math.max(0.5, parseFloat(document.getElementById('cfg-delta').value) || 2.0);
+    var parsed = parseTiers(document.getElementById('cfg-tiers').value);
+    if (parsed) cfg.tiersDbm = parsed;
+    else snack('Seuils invalides — valeur precedente conservee');
+    // showDebug / haptic / sound / stillGate sont deja a jour via leurs toggles
     localStorage.setItem('miatracker_cfg', JSON.stringify(cfg));
     document.getElementById('header-title').textContent = '\u{1F431} ' + cfg.name;
+    // Recree les moteurs avec les nouveaux parametres (tuning a chaud, zero rebuild).
+    rebuildEngines();
+    document.getElementById('cfg-tiers').value = cfg.tiersDbm.join(',');
     closeConfig();
     snack('Configuration enregistrée');
   };
+
+  // Parse "-55,-65,-75,-85" -> [nombres] si 4 valeurs finies strictement
+  // decroissantes, sinon null.
+  function parseTiers(str) {
+    var parts = (str || '').split(',').map(function(s){ return parseFloat(s.trim()); });
+    if (parts.length !== 4) return null;
+    for (var i = 0; i < 4; i++) if (!isFinite(parts[i])) return null;
+    for (var j = 1; j < 4; j++) if (parts[j] >= parts[j-1]) return null;
+    return parts;
+  }
 
   window.exportSession = function() {
     var payload = JSON.stringify({ cfg: cfg, events: recorder.events });
@@ -312,9 +373,24 @@ export const webviewHtml = `<!DOCTYPE html>
   // ===== State =====
   var scanning = false;
   var stepCount = 0;          // compteur de pas cumulatif (envoye par RN)
+  var lastRssiMs = 0;         // horodatage derniere lecture RSSI (etat de connexion)
   // Moteurs v2 (injectes via algoSource) : tendance indexee sur les pas + paliers.
-  var trend = A ? A.createTrendTracker() : null;
-  var tiers = A ? A.createSignalTiers() : null;
+  // Construits depuis cfg ; recrees a chaud (sans rebuild) par rebuildEngines().
+  function buildTiers(a) {
+    return [
+      { min: a[0],       key: 'burning',   label: 'BRÛLANT' },
+      { min: a[1],       key: 'veryClose', label: 'TRÈS PROCHE' },
+      { min: a[2],       key: 'close',     label: 'PROCHE' },
+      { min: a[3],       key: 'weak',      label: 'FAIBLE' },
+      { min: -Infinity,  key: 'trace',     label: 'TRACE' }
+    ];
+  }
+  var trend = null, tiers = null;
+  function rebuildEngines() {
+    trend = A ? A.createTrendTracker({ windowSteps: cfg.windowSteps, enterDelta: cfg.enterDelta }) : null;
+    tiers = A ? A.createSignalTiers({ tiers: buildTiers(cfg.tiersDbm) }) : null;
+  }
+  rebuildEngines();
   var lastTier = null;
   var lastV = null;           // dernier verdict de tendance (pour re-render periodique)
 
@@ -407,50 +483,98 @@ export const webviewHtml = `<!DOCTYPE html>
     else          { btn.textContent = '▶ Scanner'; btn.className = 'btn primary'; }
   }
 
+  // ===== Ecran : palier (fond couleur) + etat de connexion =====
+  // Fond pleine couleur pilote par le palier de signal (bleu nuit -> rouge
+  // brulant). Les couleurs sont sombres pour rester lisibles avec du texte clair.
+  var TIER_BG = {
+    burning:   '#8f1524',
+    veryClose: '#7a3410',
+    close:     '#5c4d12',
+    weak:      '#13405e',
+    trace:     '#0d1b30'
+  };
+  var NEUTRAL_BG = '#14181f';
+  function setBg(c) { document.getElementById('screen').style.backgroundColor = c; }
+
+  // Etat de connexion par age de la derniere lecture RSSI.
+  function connState() {
+    if (!scanning || lastRssiMs === 0) return 'none';
+    var age = Date.now() - lastRssiMs;
+    if (age < CONN_SIGNAL_MS) return 'signal';
+    if (age < CONN_LOST_MS) return 'unstable';
+    return 'lost';
+  }
+
+  // Label geant du palier + distance indicative + fond couleur.
+  function renderTier() {
+    var lab = document.getElementById('tier-label');
+    var sub = document.getElementById('tier-sub');
+    if (!scanning) { lab.textContent = 'PRÊT'; sub.textContent = ''; setBg(NEUTRAL_BG); return; }
+    if (connState() === 'lost') return; // renderConn pilote l'ecran quand PERDU
+    lab.textContent = lastTier ? lastTier.label : '—';
+    var d = distDisplay;
+    sub.textContent = (d == null) ? '' : (d < 1000 ? '~ ' + d.toFixed(1) + ' m' : '~ >1 km');
+    setBg(lastTier ? (TIER_BG[lastTier.key] || NEUTRAL_BG) : NEUTRAL_BG);
+  }
+
+  // Ligne de connexion : discrete si SIGNAL, avertit si INSTABLE, prend le
+  // dessus (avec "dernier contact il y a Xs") si PERDU.
+  function renderConn() {
+    var el = document.getElementById('conn-line');
+    var screen = document.getElementById('screen');
+    var st = connState();
+    if (st === 'lost') {
+      var age = Math.round((Date.now() - lastRssiMs) / 1000);
+      // Le dernier palier reste affiche mais estompe (via .lost) ; le message de
+      // perte prend le dessus, pleine opacite, en rouge.
+      el.textContent = '\u{26A0} Signal perdu \xB7 dernier contact il y a ' + age + ' s';
+      el.style.color = 'var(--danger)';
+      screen.classList.add('lost');
+      setBg(NEUTRAL_BG);
+    } else {
+      screen.classList.remove('lost');
+      if (st === 'unstable') { el.textContent = 'signal instable…'; el.style.color = 'var(--warn)'; }
+      else { el.textContent = ''; }
+    }
+  }
+
   // ===== Verdict chaud / froid (moteur v2 : tendance indexee sur les pas) =====
-  // Rendu du dernier verdict renvoye par createTrendTracker. Le RSSI immobile
-  // etant du bruit, aucun verdict directionnel n'est emis tant qu'on n'a pas
-  // marche assez ("Avance pour chercher"), et un gros saut sans pas affiche
-  // "Mia bouge ?" au lieu d'une fausse direction.
+  // Le RSSI immobile etant du bruit, aucun verdict directionnel n'est emis tant
+  // qu'on n'a pas marche assez ("Avance pour chercher"), et un gros saut sans pas
+  // affiche "Mia bouge ?" au lieu d'une fausse direction. Texte clair (lisible sur
+  // le fond couleur du palier) ; la couleur chaud/froid passe par la fleche emoji.
   function renderVerdict(v) {
     var arrow = document.getElementById('hc-arrow');
     var text  = document.getElementById('hc-text');
     var slope = document.getElementById('hc-slope');
-    var distEl = document.getElementById('dist-line');
     if (!v) {
-      arrow.textContent = '—'; arrow.style.color = 'var(--neutral)';
-      text.textContent = scanning ? 'En attente du signal…' : 'Scan arrêté';
-      text.style.color = 'var(--neutral)';
-      slope.textContent = '—';
+      arrow.textContent = scanning ? '\u{1F50D}' : '—';
+      text.textContent = scanning ? 'En attente du signal…' : 'Appuyez sur Scanner';
+      text.style.color = '#e6edf3';
+      slope.textContent = '';
       return;
     }
     var verdict = v.verdict;
     if (verdict === 'hot') {
-      arrow.textContent = '\u{1F525}'; arrow.style.color = 'var(--hot)';
-      text.textContent = 'Tu chauffes'; text.style.color = 'var(--hot)';
+      arrow.textContent = '\u{1F525}';
+      text.textContent = 'Tu chauffes'; text.style.color = '#ffd5d5';
       slope.textContent = 'Δ ' + (v.delta >= 0 ? '+' : '') + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
     } else if (verdict === 'cold') {
-      arrow.textContent = '\u{2744}'; arrow.style.color = 'var(--cold)';
-      text.textContent = 'Tu refroidis'; text.style.color = 'var(--cold)';
+      arrow.textContent = '\u{2744}';
+      text.textContent = 'Tu refroidis'; text.style.color = '#cfe4ff';
       slope.textContent = 'Δ ' + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
     } else if (verdict === 'unstable') {
-      arrow.textContent = '\u{26A0}'; arrow.style.color = 'var(--warn)';
-      text.textContent = 'Mia bouge ?'; text.style.color = 'var(--warn)';
+      arrow.textContent = '\u{26A0}';
+      text.textContent = 'Mia bouge ?'; text.style.color = '#ffe4b0';
       slope.textContent = 'signal instable';
     } else if (verdict === 'searching') {
-      arrow.textContent = '\u{1F6B6}'; arrow.style.color = 'var(--warn)';
-      text.textContent = 'Avance pour chercher'; text.style.color = 'var(--warn)';
+      arrow.textContent = '\u{1F6B6}';
+      text.textContent = 'Avance pour chercher'; text.style.color = '#ffe4b0';
       slope.textContent = v.steps + ' pas \xB7 avance…';
     } else { // stable
-      arrow.textContent = '≈'; arrow.style.color = 'var(--neutral)';
-      text.textContent = 'Stable'; text.style.color = 'var(--neutral)';
+      arrow.textContent = '≈';
+      text.textContent = 'Stable'; text.style.color = '#e6edf3';
       slope.textContent = 'Δ ' + (v.delta >= 0 ? '+' : '') + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
-    }
-    // ligne palier + distance indicative
-    if (distEl) {
-      var d = distDisplay;
-      var dTxt = (d == null) ? '—' : (d < 1000 ? '~ ' + d.toFixed(1) + ' m' : '~ >1 km');
-      distEl.textContent = (lastTier ? lastTier.label + ' \xB7 ' : '') + dTxt;
     }
     triggerHapticIfHot(verdict);
   }
@@ -472,6 +596,7 @@ export const webviewHtml = `<!DOCTYPE html>
   // ===== Handle measurements coming from RN =====
   function handleRSSI(rssi, name) {
     var now = Date.now();
+    lastRssiMs = now; // contact etabli (etat de connexion)
 
     // Garde anti-outlier : un saut > RSSI_JUMP_DBM en <1.5s est physiquement
     // improbable. La valeur est quand meme affichee (barre RSSI) mais ne nourrit
@@ -495,6 +620,8 @@ export const webviewHtml = `<!DOCTYPE html>
     // Verdict de tendance : moteur v2 indexe sur les pas (fige a l'immobilite,
     // detecte "Mia bouge", ne juge que si on a marche assez).
     lastV = trend ? trend.push(smoothed, stepCount, now, isStill) : null;
+    renderConn();
+    renderTier();
     renderVerdict(lastV);
 
     // Si on est en calibration, alimente les samples.
@@ -608,10 +735,14 @@ export const webviewHtml = `<!DOCTYPE html>
   }
   window._snack = snack;
 
-  // Re-render periodique : maintient la cadence haptique quand on reste CHAUD
-  // et rafraichit l'etat "en attente" tant qu'aucun signal n'arrive.
+  // Re-render periodique : maintient la cadence haptique quand on reste CHAUD,
+  // fait evoluer l'etat de connexion ("dernier contact il y a Xs") et rafraichit
+  // l'ecran tant qu'aucun signal n'arrive.
   setInterval(function() {
-    if (scanning) renderVerdict(lastV);
+    if (!scanning) return;
+    renderConn();
+    renderTier();
+    renderVerdict(lastV);
   }, 500);
 
   // ===== Message bridge from RN =====
@@ -640,14 +771,16 @@ export const webviewHtml = `<!DOCTYPE html>
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arrêté', msg.scanning ? 'active' : '');
                            applyDebugVisibility();
                            if (msg.scanning) {
-                             stepCount = 0; lastTier = null; lastV = null; distDisplay = null;
+                             stepCount = 0; lastTier = null; lastV = null; distDisplay = null; lastRssiMs = 0;
                              if (trend) trend.reset(); if (tiers) tiers.reset(); resetKalman();
                              var stEl2 = document.getElementById('dbg-steps'); if (stEl2) stEl2.textContent = '0';
                              ['dbg-nat','dbg-natm'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='0';});
                              ['dbg-natr','dbg-age'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='—';});
                            } else {
-                             isStill = false; stillSinceMs = 0;
+                             isStill = false; stillSinceMs = 0; lastRssiMs = 0;
                            }
+                           renderConn();
+                           renderTier();
                            renderVerdict(scanning ? lastV : null);
                            updateMotionPill();
                            break;
