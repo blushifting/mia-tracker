@@ -9,8 +9,7 @@ import {
   Share,
 } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
-import * as Location from 'expo-location';
-import { Accelerometer, DeviceMotion } from 'expo-sensors';
+import { Accelerometer } from 'expo-sensors';
 import * as Haptics from 'expo-haptics';
 import IBeaconScanner, { IBeaconEvent, DiagEvent } from 'ibeacon-scanner';
 import { webviewHtml } from './webviewHtml';
@@ -38,8 +37,6 @@ async function requestAndroidPermissions(): Promise<boolean> {
 
 export default function App() {
   const webviewRef = useRef<WebView>(null);
-  const locationSubRef = useRef<Location.LocationSubscription | null>(null);
-  const headingSubRef = useRef<Location.LocationSubscription | null>(null);
   const scanningRef = useRef<boolean>(false);
   const lastSeenMsRef = useRef<number>(0);
   const statsRef = useRef({
@@ -55,9 +52,6 @@ export default function App() {
   const accelSubRef = useRef<ReturnType<typeof Accelerometer.addListener> | null>(null);
   const accelBufRef = useRef<{ t: number; mag: number }[]>([]);
   const lastStillRef = useRef<boolean | null>(null);
-  // Flux inertiel additif (DeviceMotion) : alimente la prediction du Kalman GPS
-  // cote WebView. N'a AUCUN lien avec le still-gate ci-dessus (qui reste intact).
-  const deviceMotionSubRef = useRef<ReturnType<typeof DeviceMotion.addListener> | null>(null);
   const [, setWebviewReady] = useState(false);
 
   useEffect(() => {
@@ -115,10 +109,7 @@ export default function App() {
       try { subI.remove(); } catch {}
       try { subD.remove(); } catch {}
       try { IBeaconScanner.stop(); } catch {}
-      locationSubRef.current?.remove();
-      headingSubRef.current?.remove();
       accelSubRef.current?.remove();
-      deviceMotionSubRef.current?.remove();
       if (statsTimerRef.current) clearInterval(statsTimerRef.current);
     };
   }, []);
@@ -160,54 +151,6 @@ export default function App() {
     lastStillRef.current = null;
   }
 
-  // Flux inertiel pour la FUSION (distinct du still-gate). On lit DeviceMotion :
-  // acceleration sans gravite (repere device, m/s^2) + attitude (alpha/beta/gamma,
-  // radians, convention W3C). On projette l'acceleration dans le repere monde
-  // (X=est, Y=nord, Z=haut) via la matrice de rotation ZXY device->monde, puis on
-  // envoie (aE, aN) au WebView pour la prediction du Kalman GPS. Le recalage GPS
-  // chaque seconde borne toute erreur ; cote WebView, cfg.imuPredict sert de
-  // kill-switch (retour au modele vitesse-constante sans rebuild).
-  function startDeviceMotion() {
-    if (deviceMotionSubRef.current) return;
-    DeviceMotion.setUpdateInterval(50); // 20 Hz : prediction fluide entre 2 fixes GPS
-    let lpE = 0, lpN = 0; // lissage passe-bas (etat local au listener courant)
-    try {
-      deviceMotionSubRef.current = DeviceMotion.addListener((d) => {
-        const acc = d.acceleration;  // m/s^2, repere device, gravite retiree
-        const rot = d.rotation;      // attitude W3C (alpha/beta/gamma) en radians
-        if (!acc || !rot) return;
-        const cA = Math.cos(rot.alpha), sA = Math.sin(rot.alpha);
-        const cB = Math.cos(rot.beta),  sB = Math.sin(rot.beta);
-        const cG = Math.cos(rot.gamma), sG = Math.sin(rot.gamma);
-        // Matrice ZXY device->monde (W3C). worldVec = R . deviceVec
-        const m11 = cA * cG - sA * sB * sG;
-        const m12 = -cB * sA;
-        const m13 = cA * sG + cG * sA * sB;
-        const m21 = cG * sA + cA * sB * sG;
-        const m22 = cA * cB;
-        const m23 = sA * sG - cA * cG * sB;
-        const ax = acc.x || 0, ay = acc.y || 0, az = acc.z || 0;
-        let aE = m11 * ax + m12 * ay + m13 * az; // composante est
-        let aN = m21 * ax + m22 * ay + m23 * az; // composante nord
-        // lissage passe-bas (~0.17 s de constante de temps a 20 Hz)
-        lpE += 0.3 * (aE - lpE);
-        lpN += 0.3 * (aN - lpN);
-        aE = lpE; aN = lpN;
-        const mag = Math.sqrt(aE * aE + aN * aN);
-        if (mag < 0.12) { aE = 0; aN = 0; }                 // deadband : tue bruit/biais au repos
-        else if (mag > 4) { const k = 4 / mag; aE *= k; aN *= k; } // clamp anti-outlier
-        postToWebview({ type: 'accel', aE, aN, t: Date.now() });
-      });
-    } catch (e: any) {
-      postToWebview({ type: 'sensors', accel: 'dm-err:' + (e?.message || 'unknown').slice(0, 30) });
-    }
-  }
-
-  function stopDeviceMotion() {
-    deviceMotionSubRef.current?.remove();
-    deviceMotionSubRef.current = null;
-  }
-
   async function triggerHaptic(intensity: number) {
     try {
       if (intensity >= 3) await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -233,30 +176,6 @@ export default function App() {
       return;
     }
 
-    postToWebview({ type: 'status', msg: 'Demarrage GPS...', state: 'warn' });
-    try {
-      locationSubRef.current = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
-        (pos) => {
-          postToWebview({
-            type: 'gps',
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-            acc: pos.coords.accuracy ?? null,
-          });
-        }
-      );
-    } catch (e: any) {
-      postToWebview({ type: 'error', msg: 'GPS: ' + (e?.message || 'erreur') });
-    }
-
-    try {
-      headingSubRef.current = await Location.watchHeadingAsync((h) => {
-        const heading = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
-        postToWebview({ type: 'heading', heading });
-      });
-    } catch {}
-
     scanningRef.current = true;
     const keepPing = statsRef.current.nativePing;
     statsRef.current = {
@@ -271,7 +190,6 @@ export default function App() {
       postToWebview({ type: 'error', msg: 'Scan natif start: ' + (e?.message || 'erreur') });
     }
     startAccelerometer();
-    startDeviceMotion();
     postToWebview({ type: 'scanState', scanning: true });
 
     if (statsTimerRef.current) clearInterval(statsTimerRef.current);
@@ -286,10 +204,7 @@ export default function App() {
 
   function stopEverything() {
     try { IBeaconScanner.stop(); } catch {}
-    locationSubRef.current?.remove(); locationSubRef.current = null;
-    headingSubRef.current?.remove(); headingSubRef.current = null;
     stopAccelerometer();
-    stopDeviceMotion();
     if (statsTimerRef.current) { clearInterval(statsTimerRef.current); statsTimerRef.current = null; }
     scanningRef.current = false;
     postToWebview({ type: 'scanState', scanning: false });
