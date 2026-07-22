@@ -275,7 +275,6 @@ export const webviewHtml = `<!DOCTYPE html>
   var K_R = 15.0;           // measurement noise variance
   var K_Q = 2.0;            // process noise variance
   var RSSI_JUMP_DBM = 15;   // saut max accepte entre 2 samples consecutifs (sinon outlier)
-  var HAPTIC_TICK_MS = 1400;      // periode minimum entre 2 vibrations
   var CALIB_DURATION_MS = 10000;  // duree de la mesure de calibration
   var DIST_DISPLAY_ALPHA = 0.25;  // EMA pour lisser la distance affichee
   var CONN_SIGNAL_MS = 2000;      // age lecture RSSI : en-deca -> SIGNAL
@@ -327,6 +326,8 @@ export const webviewHtml = `<!DOCTYPE html>
   window.toggleSound = function() {
     cfg.sound = !cfg.sound;
     document.getElementById('cfg-sound-switch').classList.toggle('on', cfg.sound);
+    // Geste utilisateur : c'est le moment de creer/reprendre l'AudioContext.
+    if (cfg.sound) { initAudio(); playBeep(2); }
   };
 
   window.openConfig = function() { document.getElementById('config-panel').classList.add('open'); };
@@ -411,9 +412,6 @@ export const webviewHtml = `<!DOCTYPE html>
   // Stillness gate (vient de l'accelerometre via RN)
   var isStill = false;       // true = telephone immobile
   var stillSinceMs = 0;      // depuis quand on est immobile
-
-  // Haptic feedback state
-  var lastHapticMs = 0;
 
   // Calibration state
   var calib = null; // { phase, startMs, samples, timer }
@@ -576,21 +574,75 @@ export const webviewHtml = `<!DOCTYPE html>
       text.textContent = 'Stable'; text.style.color = '#e6edf3';
       slope.textContent = 'Δ ' + (v.delta >= 0 ? '+' : '') + v.delta.toFixed(1) + ' dB \xB7 ' + v.steps + ' pas';
     }
-    triggerHapticIfHot(verdict);
   }
 
-  // Haptique : tick periodique quand on se rapproche, intensite croissante avec le RSSI.
-  function triggerHapticIfHot(state) {
-    if (!cfg.haptic) return;
-    if (state !== 'hot') return;
-    var now = Date.now();
-    if (now - lastHapticMs < HAPTIC_TICK_MS) return;
-    var r = kf.x || -75;
-    var intensity = 1;
-    if (r > -55) intensity = 3;
-    else if (r > -65) intensity = 2;
-    lastHapticMs = now;
-    postRN({ type: 'haptic', intensity: intensity });
+  // ===== Feedback "compteur Geiger" : haptique + son (phase 4) =====
+  // La cadence des ticks est proportionnelle a l'INTENSITE DU PALIER (proximite) :
+  // plus on est proche, plus ca claque vite. Un burst distinct marque le passage
+  // a un palier superieur. Le son (WebAudio) suit exactement la meme cadence que
+  // l'haptique ; il est OFF par defaut et n'emet aucun son sans AudioContext
+  // (initialise dans un geste utilisateur : bouton Scanner ou toggle Son).
+
+  // Intervalle entre 2 ticks selon l'index de palier (0 = BRULANT ... 4 = TRACE).
+  var TIER_TICK_MS = [260, 480, 900, 1600, 2800];
+  var feedbackTimer = null;
+  var lastTierIndex = null; // pour detecter le passage a un palier superieur
+
+  function tierIntensity(idx) {
+    if (idx <= 1) return 3; // BRULANT / TRES PROCHE
+    if (idx === 2) return 2; // PROCHE
+    return 1;                // FAIBLE / TRACE
+  }
+
+  // ---- WebAudio : bip court facon clic Geiger (zero dependance) ----
+  var audioCtx = null;
+  function initAudio() {
+    try {
+      if (!audioCtx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) audioCtx = new AC();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {}
+  }
+  function playBeep(intensity) {
+    if (!audioCtx) return;
+    try {
+      var o = audioCtx.createOscillator();
+      var g = audioCtx.createGain();
+      o.type = 'square';
+      o.frequency.value = intensity >= 3 ? 1400 : intensity === 2 ? 1000 : 720; // plus proche = plus aigu
+      o.connect(g); g.connect(audioCtx.destination);
+      var t = audioCtx.currentTime;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+      o.start(t); o.stop(t + 0.06);
+    } catch (e) {}
+  }
+
+  function emitTick(idx) {
+    if (cfg.haptic) postRN({ type: 'haptic', intensity: tierIntensity(idx) });
+    if (cfg.sound) playBeep(tierIntensity(idx));
+  }
+  // Burst au passage a un palier plus fort : vibration soutenue + double clic.
+  function emitBurst() {
+    if (cfg.haptic) postRN({ type: 'haptic', intensity: 3 });
+    if (cfg.sound) { playBeep(3); setTimeout(function(){ playBeep(3); }, 70); }
+  }
+
+  // Boucle auto-planifiee : un tick a chaque intervalle propre au palier courant.
+  // Ne tique pas hors scan, sans palier, ou signal perdu.
+  function scheduleFeedback() {
+    if (feedbackTimer) clearTimeout(feedbackTimer);
+    var interval = 700;
+    var st = connState();
+    if (scanning && lastTier && st !== 'lost' && st !== 'none') {
+      var idx = (lastTier.index != null) ? lastTier.index : 4;
+      interval = TIER_TICK_MS[idx] != null ? TIER_TICK_MS[idx] : 2800;
+      emitTick(idx);
+    }
+    feedbackTimer = setTimeout(scheduleFeedback, interval);
   }
 
   // ===== Handle measurements coming from RN =====
@@ -615,7 +667,12 @@ export const webviewHtml = `<!DOCTYPE html>
 
     // Distance indicative (EMA) + palier de signal
     updateDistDisplay(rssiToDistance(smoothed));
-    if (tiers) lastTier = tiers.push(smoothed);
+    if (tiers) {
+      lastTier = tiers.push(smoothed);
+      // burst au passage a un palier plus fort (index qui diminue = plus proche)
+      if (lastTierIndex != null && lastTier.index < lastTierIndex) emitBurst();
+      lastTierIndex = lastTier.index;
+    }
 
     // Verdict de tendance : moteur v2 indexe sur les pas (fige a l'immobilite,
     // detecte "Mia bouge", ne juge que si on a marche assez).
@@ -718,6 +775,9 @@ export const webviewHtml = `<!DOCTYPE html>
       postRN({ type: 'stopScan' });
       setStatus('Arrêt du scan…', 'warn');
     } else {
+      // Geste utilisateur : cree/reprend l'AudioContext maintenant, pour que le
+      // son "Geiger" puisse demarrer meme si on l'active plus tard pendant le scan.
+      initAudio();
       postRN({ type: 'startScan' });
       setStatus('Démarrage du scan… (autoriser Bluetooth si demandé)', 'warn');
       snack('Si une popup permission apparaît, accepte-la');
@@ -745,6 +805,10 @@ export const webviewHtml = `<!DOCTYPE html>
     renderVerdict(lastV);
   }, 500);
 
+  // Boucle de feedback "Geiger" (haptique + son) : auto-planifiee, cadence pilotee
+  // par le palier courant. Se gate elle-meme hors scan / signal perdu.
+  scheduleFeedback();
+
   // ===== Message bridge from RN =====
   function onMessage(raw) {
     try {
@@ -771,7 +835,7 @@ export const webviewHtml = `<!DOCTYPE html>
                            setStatus(msg.scanning ? 'Scan actif \xB7 en attente du signal de Mia…' : 'Scan arrêté', msg.scanning ? 'active' : '');
                            applyDebugVisibility();
                            if (msg.scanning) {
-                             stepCount = 0; lastTier = null; lastV = null; distDisplay = null; lastRssiMs = 0;
+                             stepCount = 0; lastTier = null; lastV = null; distDisplay = null; lastRssiMs = 0; lastTierIndex = null;
                              if (trend) trend.reset(); if (tiers) tiers.reset(); resetKalman();
                              var stEl2 = document.getElementById('dbg-steps'); if (stEl2) stEl2.textContent = '0';
                              ['dbg-nat','dbg-natm'].forEach(function(id){var e=document.getElementById(id); if (e) e.textContent='0';});
